@@ -11,6 +11,7 @@ import { getDbAccessor } from "./db-accessor";
 import { logger } from "./logger";
 import type { EmbeddingConfig, MemorySearchConfig, ResolvedMemoryConfig } from "./memory-config";
 import { getGraphBoostIds, tokenizeGraphQuery } from "./pipeline/graph-search";
+import { FTS_STOP } from "./pipeline/stop-words";
 import {
 	resolveFocalEntities,
 	setTraversalStatus,
@@ -154,14 +155,18 @@ function sanitizeFtsQuery(raw: string): string {
 		.replace(/'/g, " ")
 		.split(/\s+/)
 		.map((token) => {
-			const cleaned = token.replace(/[":()^*]/g, "").trim();
+			const cleaned = token.replace(/[":()^*?]/g, "").trim().toLowerCase();
 			if (!cleaned || cleaned.length < 2) return null;
+			if (FTS_STOP.has(cleaned)) return null;
 			return `"${cleaned}"`;
 		})
 		.filter(Boolean) as string[];
 
 	if (tokens.length === 0) return "";
-	return tokens.join(" ");
+	// Short queries (<=3 content tokens): implicit AND for precision.
+	// Longer queries: OR so BM25 IDF ranks by term importance.
+	if (tokens.length <= 3) return tokens.join(" ");
+	return tokens.join(" OR ");
 }
 
 // ---------------------------------------------------------------------------
