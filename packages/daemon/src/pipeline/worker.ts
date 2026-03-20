@@ -22,6 +22,7 @@ import { archiveToCold } from "./retention-worker";
 import { normalizeAndHashContent } from "../content-normalization";
 import { vectorToBlob, countChanges, syncVecInsert, syncVecDeleteBySourceExceptHash } from "../db-helpers";
 import { txPersistEntities } from "./graph-transactions";
+import { invalidateTraversalCache } from "./graph-traversal";
 import type { AnalyticsCollector } from "../analytics";
 import type { TelemetryCollector } from "../telemetry";
 import { generateWithTracking } from "./provider";
@@ -1247,6 +1248,8 @@ export function startWorker(
 							agentId: "default",
 					}),
 				);
+				// New entities/relations invalidate traversal table cache
+				invalidateTraversalCache();
 			} catch (e) {
 				logger.warn("pipeline", "Graph entity persistence failed (non-fatal)", {
 					jobId: job.id,

@@ -12,6 +12,7 @@ import type { DbAccessor } from "../db-accessor";
 import type { DiagnosticsReport, ProviderTracker } from "../diagnostics";
 import { getDiagnostics } from "../diagnostics";
 import { propagateMemoryStatus } from "../knowledge-graph";
+import { invalidateTraversalCache } from "./graph-traversal";
 import { getLlmProvider } from "../llm";
 import { logger } from "../logger";
 import type { PipelineV2Config } from "../memory-config";
@@ -373,6 +374,10 @@ export function startMaintenanceWorker(
 			logger.warn("maintenance", "Summary condensation check failed (non-fatal)", {
 				error: e instanceof Error ? e.message : String(e),
 			});
+		}
+
+		if (feedbackDecayedAspects > 0 || feedbackPropagatedAttributes > 0) {
+			invalidateTraversalCache();
 		}
 
 		return {

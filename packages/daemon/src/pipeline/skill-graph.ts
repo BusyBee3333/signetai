@@ -15,6 +15,7 @@ import type { LlmProvider } from "./provider";
 import { enrichSkillFrontmatter } from "./skill-enrichment";
 import { extractFactsAndEntities } from "./extraction";
 import { txPersistEntities } from "./graph-transactions";
+import { invalidateTraversalCache } from "./graph-traversal";
 import { vectorToBlob, syncVecInsert, syncVecDeleteByEmbeddingIds } from "../db-helpers";
 import { logger } from "../logger";
 
@@ -298,6 +299,7 @@ export async function installSkillNode(
 					});
 					entitiesExtracted = result.entitiesInserted + result.entitiesUpdated;
 				});
+				invalidateTraversalCache();
 			}
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);

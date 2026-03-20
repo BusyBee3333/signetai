@@ -14,6 +14,7 @@ import type { LlmProvider } from "./provider";
 import { stripFences, tryParseJson } from "./extraction";
 import { DEP_DESCRIPTIONS } from "./structural-dependency";
 import { upsertDependency } from "../knowledge-graph";
+import { invalidateTraversalCache } from "./graph-traversal";
 import { logger } from "../logger";
 
 // ---------------------------------------------------------------------------
@@ -277,6 +278,10 @@ async function tick(deps: DependencySynthesisDeps): Promise<void> {
 		// upsert succeeded — otherwise the entity retries on the next tick.
 		if (results.length === 0 || created > 0) {
 			markSynthesized(deps.accessor, entity.id);
+		}
+
+		if (created > 0) {
+			invalidateTraversalCache();
 		}
 
 		logger.info("dependency-synthesis", "Entity synthesized", {

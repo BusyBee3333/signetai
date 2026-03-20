@@ -42,6 +42,7 @@ interface MemoryRow {
 }
 import { countChanges, syncVecDeleteByEmbeddingIds } from "../db-helpers";
 import { txDecrementEntityMentions } from "./graph-transactions";
+import { invalidateTraversalCache } from "./graph-traversal";
 import { purgeOldTrainingPairs } from "../predictor-training-pairs";
 import { logger } from "../logger";
 
@@ -313,6 +314,10 @@ function runSweep(accessor: DbAccessor, cfg: RetentionConfig): RetentionSweepRes
 	const graphResult = accessor.withWriteTx((db) => purgeGraphLinks(db, tombstoneCutoff, cfg.batchLimit));
 	const graphLinksPurged = graphResult.mentionsPurged;
 	const entitiesOrphaned = graphResult.entitiesOrphaned;
+
+	if (entitiesOrphaned > 0) {
+		invalidateTraversalCache();
+	}
 
 	// Step 2: embeddings for expired tombstones
 	const embeddingsPurged = accessor.withWriteTx((db) => purgeEmbeddings(db, tombstoneCutoff, cfg.batchLimit));

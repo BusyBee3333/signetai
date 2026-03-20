@@ -38,7 +38,7 @@ import {
 	runPredictorScoring,
 } from "./predictor-scoring";
 import { propagateMemoryStatus } from "./knowledge-graph";
-import { resolveFocalEntities, setTraversalStatus, traverseKnowledgeGraph } from "./pipeline/graph-traversal";
+import { invalidateTraversalCache, resolveFocalEntities, setTraversalStatus, traverseKnowledgeGraph } from "./pipeline/graph-traversal";
 import {
 	applyFtsOverlapFeedback,
 	decayAspectWeights,
@@ -2089,6 +2089,9 @@ export function handleSessionEnd(req: SessionEndRequest): SessionEndResponse {
 			}
 
 			feedbackPropagatedAttributes = propagateMemoryStatus(getDbAccessor(), agentId);
+			if (feedbackDecayedAspects > 0 || feedbackPropagatedAttributes > 0) {
+				invalidateTraversalCache();
+			}
 			recordFeedbackTelemetry({
 				feedbackDecayedAspects,
 				feedbackPropagatedAttributes,
