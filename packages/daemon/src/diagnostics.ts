@@ -109,6 +109,14 @@ export interface PredictorHealthParams {
 	readonly driftDetected?: boolean;
 }
 
+export interface GraphHealth {
+	readonly entityCount: number;
+	readonly edgeCount: number;
+	readonly communityCount: number;
+	readonly modularity: number | null;
+	readonly quality: "fragmented" | "moderate" | "strong" | "unknown";
+}
+
 export interface DiagnosticsReport {
 	readonly timestamp: string;
 	readonly composite: HealthScore;
@@ -121,6 +129,7 @@ export interface DiagnosticsReport {
 	readonly connector: ConnectorHealth;
 	readonly update: UpdateHealth;
 	readonly predictor: PredictorHealth;
+	readonly graph: GraphHealth;
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +675,57 @@ const BASE_WEIGHTS = {
 
 const PREDICTOR_SCALE = 1 - BASE_WEIGHTS.predictor; // 0.95
 
+// ---------------------------------------------------------------------------
+// Graph health (informational, not included in composite score)
+// ---------------------------------------------------------------------------
+
+export function getGraphHealth(db: ReadDb): GraphHealth {
+	try {
+		const entityRow = db
+			.prepare("SELECT COUNT(*) AS n FROM entities")
+			.get() as { n: number } | undefined;
+		const edgeRow = db
+			.prepare("SELECT COUNT(*) AS n FROM entity_dependencies")
+			.get() as { n: number } | undefined;
+		const communityRow = db
+			.prepare("SELECT COUNT(*) AS n FROM entity_communities")
+			.get() as { n: number } | undefined;
+
+		const communityCount = communityRow?.n ?? 0;
+
+		// Read average cohesion to infer quality without re-running detection
+		const cohesionRow = db
+			.prepare(
+				"SELECT AVG(cohesion) AS avg FROM entity_communities WHERE member_count > 1",
+			)
+			.get() as { avg: number | null } | undefined;
+
+		const entityCount = entityRow?.n ?? 0;
+		const edgeCount = edgeRow?.n ?? 0;
+
+		const avg = cohesionRow?.avg;
+		const quality: GraphHealth["quality"] =
+			communityCount === 0 || avg === null || avg === undefined
+				? "unknown"
+				: avg > 0.3
+					? "strong"
+					: avg >= 0.1
+						? "moderate"
+						: "fragmented";
+
+		return { entityCount, edgeCount, communityCount, modularity: null, quality };
+	} catch {
+		// entity_communities table may not exist yet
+		return {
+			entityCount: 0,
+			edgeCount: 0,
+			communityCount: 0,
+			modularity: null,
+			quality: "unknown",
+		};
+	}
+}
+
 export function getDiagnostics(
 	db: ReadDb,
 	tracker: ProviderTracker,
@@ -683,6 +743,7 @@ export function getDiagnostics(
 	const predictor = getPredictorHealth(
 		predictorParams ?? DISABLED_PREDICTOR,
 	);
+	const graph = getGraphHealth(db);
 
 	// When predictor is enabled, include it in the composite and
 	// scale base weights down to keep the total at 1.0.
@@ -719,5 +780,6 @@ export function getDiagnostics(
 		connector,
 		update,
 		predictor,
+		graph,
 	};
 }
