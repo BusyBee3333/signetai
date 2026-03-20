@@ -215,11 +215,7 @@ export async function hybridRecall(
 	const minScore = cfg.search.min_score;
 
 	const filter = buildFilterClause(params);
-	// When scope filtering is active, vector search can't filter at query
-	// time so out-of-scope IDs get dropped at hydration. Over-fetch to
-	// compensate so the final result count still hits `limit`.
 	const scoped = params.scope !== undefined;
-	const vecTopK = scoped ? cfg.search.top_k * 2 : cfg.search.top_k;
 
 	// --- BM25 keyword search via FTS5 ---
 	const bm25Map = new Map<string, number>();
@@ -255,27 +251,37 @@ export async function hybridRecall(
 		});
 	}
 
-	// --- Vector search via sqlite-vec ---
-	const vectorMap = new Map<string, number>();
+	// --- Query embedding (used by reranker even when vector search is skipped) ---
 	let queryVecF32: Float32Array | null = null;
 	try {
 		const queryVec = await embedFn(query, cfg.embedding);
-		if (queryVec) {
-			queryVecF32 = new Float32Array(queryVec);
+		if (queryVec) queryVecF32 = new Float32Array(queryVec);
+	} catch (e) {
+		logger.warn("memory", "Embedding failed", { error: String(e) });
+	}
+
+	// --- Vector search via sqlite-vec ---
+	// Skipped for scoped queries: sqlite-vec cannot pre-filter by scope,
+	// so out-of-scope results dominate the ranked list and displace
+	// in-scope FTS5/traversal matches at the pre-hydration truncation.
+	// Graph traversal provides the structural retrieval path (DP-6).
+	const vectorMap = new Map<string, number>();
+	if (!scoped && queryVecF32) {
+		try {
 			getDbAccessor().withReadDb((db) => {
 				const vecResults = vectorSearch(db as any, queryVecF32!, {
-					limit: vecTopK,
+					limit: cfg.search.top_k,
 					type: params.type as "fact" | "preference" | "decision" | undefined,
 				});
 				for (const r of vecResults) {
 					vectorMap.set(r.id, r.score);
 				}
 			});
+		} catch (e) {
+			logger.warn("memory", "Vector search failed, using keyword only", {
+				error: String(e),
+			});
 		}
-	} catch (e) {
-		logger.warn("memory", "Vector search failed, using keyword only", {
-			error: String(e),
-		});
 	}
 
 	// --- Merge scores ---
@@ -511,15 +517,19 @@ export async function hybridRecall(
 		}
 	}
 
-	const topIds = scored.slice(0, limit).map((s) => s.id);
+	// Over-fetch before hydration when scoped. With vector search
+	// skipped, all candidates should already be in-scope, but this
+	// guards against edge cases in traversal or graph boost.
+	const preHydrate = scoped ? limit * 3 : limit;
+	const topIds = scored.slice(0, preHydrate).map((s) => s.id);
 
 	if (topIds.length === 0) {
 		return { results: [], query, method: "hybrid" };
 	}
 
 	// --- Fetch full memory rows ---
-	// Scope filter on hydration catches vector-search results that bypassed
-	// the FTS filter clause (vectorSearch doesn't receive scope params).
+	// Scope filter on hydration catches any results that bypassed
+	// the FTS filter clause (e.g. unscoped graph boost results).
 	const scopeClause =
 		params.scope !== undefined
 			? params.scope === null
