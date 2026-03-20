@@ -678,13 +678,34 @@ export async function hybridRecall(
 					const focal = resolveFocalEntities(db, agentId, { queryTokens });
 					if (focal.entityIds.length === 0) return [];
 
-					const placeholders = focal.entityIds.map(() => "?").join(", ");
+					// Scope-filter: only include entities mentioned in
+					// in-scope memories so unscoped entities (codebase
+					// concepts etc.) don't pollute scoped searches.
+					let eids = focal.entityIds;
+					if (params.scope !== undefined) {
+						const ph = eids.map(() => "?").join(", ");
+						const sc = params.scope === null ? "m.scope IS NULL" : "m.scope = ?";
+						const sa: unknown[] = params.scope === null ? [] : [params.scope];
+						const sr = db
+							.prepare(
+								`SELECT DISTINCT mem.entity_id
+								 FROM memory_entity_mentions mem
+								 JOIN memories m ON m.id = mem.memory_id
+								 WHERE mem.entity_id IN (${ph})
+								   AND ${sc} AND m.is_deleted = 0`,
+							)
+							.all(...eids, ...sa) as Array<{ entity_id: string }>;
+						eids = sr.map((r) => r.entity_id);
+						if (eids.length === 0) return [];
+					}
+
+					const placeholders = eids.map(() => "?").join(", ");
 					const entities = db
 						.prepare(
 							`SELECT id, name, entity_type FROM entities
 							 WHERE id IN (${placeholders})`,
 						)
-						.all(...focal.entityIds) as Array<{
+						.all(...eids) as Array<{
 						id: string;
 						name: string;
 						entity_type: string;
