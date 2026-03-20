@@ -1,0 +1,22 @@
+/**
+ * Shared FTS5 stop-word list.
+ *
+ * Used by both memory search (FTS query sanitization) and graph search
+ * (entity resolution token filtering). Extracted to avoid duplication
+ * and keep both paths consistent.
+ */
+export const FTS_STOP = new Set([
+	"a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+	"have", "has", "had", "do", "does", "did", "will", "would", "could",
+	"should", "may", "might", "shall", "can", "to", "of", "in", "for",
+	"on", "with", "at", "by", "from", "as", "into", "through", "during",
+	"before", "after", "above", "below", "between", "out", "off", "over",
+	"under", "again", "then", "once", "here", "there", "when", "where",
+	"why", "how", "all", "each", "every", "both", "few", "more", "most",
+	"other", "some", "such", "no", "nor", "not", "only", "own", "same",
+	"so", "than", "too", "very", "just", "because", "but", "and", "or",
+	"if", "while", "about", "up", "i", "me", "my", "we", "our", "you",
+	"your", "he", "him", "his", "she", "her", "it", "its", "they", "them",
+	"their", "what", "which", "who", "whom", "this", "that", "these",
+	"those", "am", "also", "any", "much", "many", "like",
+]);

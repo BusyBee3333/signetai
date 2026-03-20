@@ -9,8 +9,9 @@
 import { vectorSearch } from "@signet/core";
 import { getDbAccessor } from "./db-accessor";
 import { logger } from "./logger";
-import type { EmbeddingConfig, ResolvedMemoryConfig } from "./memory-config";
+import type { EmbeddingConfig, MemorySearchConfig, ResolvedMemoryConfig } from "./memory-config";
 import { getGraphBoostIds, tokenizeGraphQuery } from "./pipeline/graph-search";
+import { FTS_STOP } from "./pipeline/stop-words";
 import {
 	resolveFocalEntities,
 	setTraversalStatus,
@@ -140,25 +141,6 @@ function buildFilterClause(params: RecallParams): FilterClause {
 // FTS5 query sanitization
 // ---------------------------------------------------------------------------
 
-// Stop words filtered from FTS queries to prevent common terms from
-// flooding OR-joined matches. Without filtering, "What are some changes
-// Caroline has faced" matches every memory containing "are" or "some".
-const FTS_STOP = new Set([
-	"a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-	"have", "has", "had", "do", "does", "did", "will", "would", "could",
-	"should", "may", "might", "shall", "can", "to", "of", "in", "for",
-	"on", "with", "at", "by", "from", "as", "into", "through", "during",
-	"before", "after", "above", "below", "between", "out", "off", "over",
-	"under", "again", "then", "once", "here", "there", "when", "where",
-	"why", "how", "all", "each", "every", "both", "few", "more", "most",
-	"other", "some", "such", "no", "nor", "not", "only", "own", "same",
-	"so", "than", "too", "very", "just", "because", "but", "and", "or",
-	"if", "while", "about", "up", "i", "me", "my", "we", "our", "you",
-	"your", "he", "him", "his", "she", "her", "it", "its", "they", "them",
-	"their", "what", "which", "who", "whom", "this", "that", "these",
-	"those", "am", "also", "any", "much", "many", "like",
-]);
-
 /**
  * Sanitize a query string for FTS5 MATCH.
  *
@@ -197,6 +179,54 @@ function sanitizeFtsQuery(raw: string): string {
 	if (tokens.length === 1) return tokens[0];
 	// OR for recall-oriented matching; BM25 handles ranking
 	return tokens.join(" OR ");
+}
+
+// ---------------------------------------------------------------------------
+// Rehearsal boost (shared between traversal-primary and legacy paths)
+// ---------------------------------------------------------------------------
+
+function applyRehearsalBoost(
+	scored: Array<{ id: string; score: number; source: string }>,
+	search: MemorySearchConfig,
+): void {
+	if (!search.rehearsal_enabled || search.rehearsal_weight <= 0 || scored.length === 0) return;
+	try {
+		const ids = scored.map((s) => s.id);
+		const placeholders = ids.map(() => "?").join(", ");
+		const accessRows = getDbAccessor().withReadDb(
+			(db) =>
+				db
+					.prepare(
+						`SELECT id, access_count, last_accessed
+						 FROM memories
+						 WHERE id IN (${placeholders})`,
+					)
+					.all(...ids) as Array<{
+					id: string;
+					access_count: number;
+					last_accessed: string | null;
+				}>,
+		);
+
+		const nowMs = Date.now();
+		const rw = search.rehearsal_weight;
+		const accessMap = new Map(accessRows.map((r) => [r.id, r]));
+		for (const s of scored) {
+			const row = accessMap.get(s.id);
+			if (!row || row.access_count <= 0) continue;
+			const daysSinceAccess = row.last_accessed
+				? (nowMs - new Date(row.last_accessed).getTime()) / 86_400_000
+				: search.rehearsal_half_life_days;
+			const recencyFactor = 0.5 ** (daysSinceAccess / search.rehearsal_half_life_days);
+			const boost = rw * Math.log(row.access_count + 1) * recencyFactor;
+			s.score *= 1 + boost;
+		}
+		scored.sort((a, b) => b.score - a.score);
+	} catch (e) {
+		logger.warn("memory", "Rehearsal boost failed (non-fatal)", {
+			error: e instanceof Error ? e.message : String(e),
+		});
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -284,9 +314,9 @@ export async function hybridRecall(
 		}
 	}
 
-	// --- Merge scores ---
+	// --- Flat search: merge BM25 + vector scores ---
 	const allIds = new Set([...bm25Map.keys(), ...vectorMap.keys()]);
-	const scored: Array<{ id: string; score: number; source: string }> = [];
+	const flatScored: Array<{ id: string; score: number; source: string }> = [];
 
 	for (const id of allIds) {
 		const bm25 = bm25Map.get(id) ?? 0;
@@ -305,164 +335,195 @@ export async function hybridRecall(
 			source = "keyword";
 		}
 
-		if (score >= minScore) scored.push({ id, score, source });
+		if (score >= minScore) flatScored.push({ id, score, source });
 	}
 
-	scored.sort((a, b) => b.score - a.score);
+	flatScored.sort((a, b) => b.score - a.score);
 
-	// --- Rehearsal boost: frequently accessed memories rank higher ---
-	if (cfg.search.rehearsal_enabled && cfg.search.rehearsal_weight > 0 && scored.length > 0) {
-		try {
-			const rehearsalIds = scored.map((s) => s.id);
-			const placeholders = rehearsalIds.map(() => "?").join(", ");
-			const accessRows = getDbAccessor().withReadDb(
-				(db) =>
-					db
-						.prepare(
-							`SELECT id, access_count, last_accessed
-							 FROM memories
-							 WHERE id IN (${placeholders})`,
-						)
-						.all(...rehearsalIds) as Array<{
-						id: string;
-						access_count: number;
-						last_accessed: string | null;
-					}>,
-			);
+	// --- Score pipeline: traversal-primary vs legacy boost ---
+	const traversalPrimary = cfg.pipelineV2.graph.enabled
+		&& cfg.pipelineV2.traversal?.enabled
+		&& cfg.pipelineV2.traversal?.primary !== false;
 
-			const nowMs = Date.now();
-			const rw = cfg.search.rehearsal_weight;
+	let scored: Array<{ id: string; score: number; source: string }>;
 
-			const accessMap = new Map(accessRows.map((r) => [r.id, r]));
-			for (const s of scored) {
-				const row = accessMap.get(s.id);
-				if (!row || row.access_count <= 0) continue;
+	if (traversalPrimary) {
+		// Channel A: graph traversal (primary retrieval path per DP-6)
+		const traversalScored: Array<{ id: string; score: number; source: string }> = [];
 
-				const daysSinceAccess = row.last_accessed
-					? (nowMs - new Date(row.last_accessed).getTime()) / 86_400_000
-					: cfg.search.rehearsal_half_life_days;
-				const recencyFactor = 0.5 ** (daysSinceAccess / cfg.search.rehearsal_half_life_days);
-				const boost = rw * Math.log(row.access_count + 1) * recencyFactor;
-				s.score *= 1 + boost;
-			}
-			scored.sort((a, b) => b.score - a.score);
-		} catch (e) {
-			logger.warn("memory", "Rehearsal boost failed (non-fatal)", {
-				error: e instanceof Error ? e.message : String(e),
-			});
-		}
-	}
-
-	// --- Graph boost: pull up memories linked via knowledge graph ---
-	if (cfg.pipelineV2.graph.enabled && cfg.pipelineV2.graph.boostWeight > 0) {
-		try {
-			const graphResult = getDbAccessor().withReadDb((db) =>
-				getGraphBoostIds(query, db, cfg.pipelineV2.graph.boostTimeoutMs),
-			);
-			if (graphResult.graphLinkedIds.size > 0) {
-				const gw = cfg.pipelineV2.graph.boostWeight;
-				for (const s of scored) {
-					if (graphResult.graphLinkedIds.has(s.id)) {
-						s.score = (1 - gw) * s.score + gw;
-					}
-				}
-				scored.sort((a, b) => b.score - a.score);
-			}
-		} catch (e) {
-			logger.warn("memory", "Graph boost failed (non-fatal)", {
-				error: e instanceof Error ? e.message : String(e),
-			});
-		}
-	}
-
-	// --- KA traversal boost: structural one-hop retrieval via KA tables ---
-	if (cfg.pipelineV2.graph.enabled && cfg.pipelineV2.traversal?.enabled) {
-		try {
-			const traversalCfg = cfg.pipelineV2.traversal;
-			const queryTokens = tokenizeGraphQuery(query);
-			if (queryTokens.length > 0) {
-				const agentId = params.agentId ?? "default";
-				const focal = getDbAccessor().withReadDb((db) =>
-					resolveFocalEntities(db, agentId, { queryTokens }),
-				);
-
-				if (focal.entityIds.length > 0) {
-					const traversal = getDbAccessor().withReadDb((db) =>
-						traverseKnowledgeGraph(focal.entityIds, db, agentId, {
-							maxAspectsPerEntity: traversalCfg.maxAspectsPerEntity,
-							maxAttributesPerAspect: traversalCfg.maxAttributesPerAspect,
-							maxDependencyHops: traversalCfg.maxDependencyHops,
-							minDependencyStrength: traversalCfg.minDependencyStrength,
-							timeoutMs: traversalCfg.timeoutMs,
-						}),
+		if (cfg.pipelineV2.traversal) {
+			try {
+				const traversalCfg = cfg.pipelineV2.traversal;
+				const queryTokens = tokenizeGraphQuery(query);
+				if (queryTokens.length > 0) {
+					const agentId = params.agentId ?? "default";
+					const focal = getDbAccessor().withReadDb((db) =>
+						resolveFocalEntities(db, agentId, { queryTokens }),
 					);
 
-					const tw = traversalCfg.boostWeight;
-					const scoredById = new Map(scored.map((row) => [row.id, row]));
-					const missingIds: string[] = [];
-
-					for (const memoryId of traversal.memoryIds) {
-						const existing = scoredById.get(memoryId);
-						if (existing) {
-							existing.score = (1 - tw) * existing.score + tw;
-						} else {
-							missingIds.push(memoryId);
-						}
-					}
-
-					if (missingIds.length > 0) {
-						const placeholders = missingIds.map(() => "?").join(", ");
-						const baseRows = getDbAccessor().withReadDb(
-							(db) =>
-								db
-									.prepare(
-										`SELECT
-											 m.id,
-											 COALESCE(MAX(ea.importance), m.importance, 0.5) AS traversal_score
-										 FROM memories m
-										 LEFT JOIN entity_attributes ea
-										   ON ea.memory_id = m.id
-										  AND ea.agent_id = ?
-										  AND ea.status = 'active'
-										 WHERE m.id IN (${placeholders})
-										   AND m.is_deleted = 0
-										 ${filter.sql}
-										 GROUP BY m.id, m.importance`,
-									)
-									.all(agentId, ...missingIds, ...filter.args) as Array<{
-									id: string;
-									traversal_score: number;
-								}>,
+					if (focal.entityIds.length > 0) {
+						const traversal = getDbAccessor().withReadDb((db) =>
+							traverseKnowledgeGraph(focal.entityIds, db, agentId, {
+								maxAspectsPerEntity: traversalCfg.maxAspectsPerEntity,
+								maxAttributesPerAspect: traversalCfg.maxAttributesPerAspect,
+								maxDependencyHops: traversalCfg.maxDependencyHops,
+								minDependencyStrength: traversalCfg.minDependencyStrength,
+								timeoutMs: traversalCfg.timeoutMs,
+								scope: params.scope,
+							}),
 						);
 
-						for (const row of baseRows) {
-							scored.push({
-								id: row.id,
-								score: Math.max(minScore, Math.min(1, row.traversal_score)),
-								source: "ka_traversal",
+						for (const [memoryId, importance] of traversal.memoryScores) {
+							traversalScored.push({
+								id: memoryId,
+								score: Math.max(minScore, Math.min(1, importance)),
+								source: "traversal",
 							});
 						}
+
+						setTraversalStatus({
+							phase: "recall",
+							at: new Date().toISOString(),
+							source: focal.source,
+							focalEntityNames: focal.entityNames,
+							focalEntities: focal.entityIds.length,
+							traversedEntities: traversal.entityCount,
+							memoryCount: traversal.memoryIds.size,
+							constraintCount: traversal.constraints.length,
+							timedOut: traversal.timedOut,
+						});
 					}
-
-					scored.sort((a, b) => b.score - a.score);
-
-					setTraversalStatus({
-						phase: "recall",
-						at: new Date().toISOString(),
-						source: focal.source,
-						focalEntityNames: focal.entityNames,
-						focalEntities: focal.entityIds.length,
-						traversedEntities: traversal.entityCount,
-						memoryCount: traversal.memoryIds.size,
-						constraintCount: traversal.constraints.length,
-						timedOut: traversal.timedOut,
-					});
 				}
+			} catch (e) {
+				logger.warn("memory", "Traversal channel failed (non-fatal)", {
+					error: e instanceof Error ? e.message : String(e),
+				});
 			}
-		} catch (e) {
-			logger.warn("memory", "KA traversal boost failed (non-fatal)", {
-				error: e instanceof Error ? e.message : String(e),
-			});
+		}
+
+		// Channel B merge: traversal memories first, flat fills remaining slots
+		const traversalIds = new Set(traversalScored.map((s) => s.id));
+		const gapFill = flatScored.filter((s) => !traversalIds.has(s.id));
+		scored = [...traversalScored, ...gapFill];
+		scored.sort((a, b) => b.score - a.score);
+
+		applyRehearsalBoost(scored, cfg.search);
+	} else {
+		scored = flatScored;
+
+		applyRehearsalBoost(scored, cfg.search);
+
+		// --- Graph boost: pull up memories linked via knowledge graph ---
+		if (cfg.pipelineV2.graph.enabled && cfg.pipelineV2.graph.boostWeight > 0) {
+			try {
+				const graphResult = getDbAccessor().withReadDb((db) =>
+					getGraphBoostIds(query, db, cfg.pipelineV2.graph.boostTimeoutMs),
+				);
+				if (graphResult.graphLinkedIds.size > 0) {
+					const gw = cfg.pipelineV2.graph.boostWeight;
+					for (const s of scored) {
+						if (graphResult.graphLinkedIds.has(s.id)) {
+							s.score = (1 - gw) * s.score + gw;
+						}
+					}
+					scored.sort((a, b) => b.score - a.score);
+				}
+			} catch (e) {
+				logger.warn("memory", "Graph boost failed (non-fatal)", {
+					error: e instanceof Error ? e.message : String(e),
+				});
+			}
+		}
+
+		// --- KA traversal boost: structural one-hop retrieval via KA tables ---
+		if (cfg.pipelineV2.graph.enabled && cfg.pipelineV2.traversal?.enabled) {
+			try {
+				const traversalCfg = cfg.pipelineV2.traversal;
+				const queryTokens = tokenizeGraphQuery(query);
+				if (queryTokens.length > 0) {
+					const agentId = params.agentId ?? "default";
+					const focal = getDbAccessor().withReadDb((db) =>
+						resolveFocalEntities(db, agentId, { queryTokens }),
+					);
+
+					if (focal.entityIds.length > 0) {
+						const traversal = getDbAccessor().withReadDb((db) =>
+							traverseKnowledgeGraph(focal.entityIds, db, agentId, {
+								maxAspectsPerEntity: traversalCfg.maxAspectsPerEntity,
+								maxAttributesPerAspect: traversalCfg.maxAttributesPerAspect,
+								maxDependencyHops: traversalCfg.maxDependencyHops,
+								minDependencyStrength: traversalCfg.minDependencyStrength,
+								timeoutMs: traversalCfg.timeoutMs,
+							}),
+						);
+
+						const tw = traversalCfg.boostWeight;
+						const scoredById = new Map(scored.map((row) => [row.id, row]));
+						const missingIds: string[] = [];
+
+						for (const memoryId of traversal.memoryIds) {
+							const existing = scoredById.get(memoryId);
+							if (existing) {
+								existing.score = (1 - tw) * existing.score + tw;
+							} else {
+								missingIds.push(memoryId);
+							}
+						}
+
+						if (missingIds.length > 0) {
+							const placeholders = missingIds.map(() => "?").join(", ");
+							const baseRows = getDbAccessor().withReadDb(
+								(db) =>
+									db
+										.prepare(
+											`SELECT
+												 m.id,
+												 COALESCE(MAX(ea.importance), m.importance, 0.5) AS traversal_score
+											 FROM memories m
+											 LEFT JOIN entity_attributes ea
+											   ON ea.memory_id = m.id
+											  AND ea.agent_id = ?
+											  AND ea.status = 'active'
+											 WHERE m.id IN (${placeholders})
+											   AND m.is_deleted = 0
+											 ${filter.sql}
+											 GROUP BY m.id, m.importance`,
+										)
+										.all(agentId, ...missingIds, ...filter.args) as Array<{
+										id: string;
+										traversal_score: number;
+									}>,
+							);
+
+							for (const row of baseRows) {
+								scored.push({
+									id: row.id,
+									score: Math.max(minScore, Math.min(1, row.traversal_score)),
+									source: "ka_traversal",
+								});
+							}
+						}
+
+						scored.sort((a, b) => b.score - a.score);
+
+						setTraversalStatus({
+							phase: "recall",
+							at: new Date().toISOString(),
+							source: focal.source,
+							focalEntityNames: focal.entityNames,
+							focalEntities: focal.entityIds.length,
+							traversedEntities: traversal.entityCount,
+							memoryCount: traversal.memoryIds.size,
+							constraintCount: traversal.constraints.length,
+							timedOut: traversal.timedOut,
+						});
+					}
+				}
+			} catch (e) {
+				logger.warn("memory", "KA traversal boost failed (non-fatal)", {
+					error: e instanceof Error ? e.message : String(e),
+				});
+			}
 		}
 	}
 

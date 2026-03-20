@@ -60,6 +60,7 @@ export const DEFAULT_PIPELINE_V2: PipelineV2Config = {
 	},
 	traversal: {
 		enabled: true,
+		primary: true,
 		maxAspectsPerEntity: 10,
 		maxAttributesPerAspect: 20,
 		maxDependencyHops: 30,
@@ -98,8 +99,8 @@ export const DEFAULT_PIPELINE_V2: PipelineV2Config = {
 		maxContentBytes: 10 * 1024 * 1024, // 10 MB
 	},
 	guardrails: {
-		maxContentChars: 500,
-		chunkTargetChars: 300,
+		maxContentChars: 800,
+		chunkTargetChars: 600,
 		recallTruncateChars: 500,
 	},
 	continuity: {
@@ -420,6 +421,9 @@ export function loadPipelineConfig(
 		traversal: {
 			enabled: resolveBool(
 				traversalRaw?.enabled, undefined, d.traversal?.enabled ?? true,
+			),
+			primary: resolveBool(
+				traversalRaw?.primary, undefined, d.traversal?.primary ?? true,
 			),
 			maxAspectsPerEntity: clampPositive(
 				traversalRaw?.maxAspectsPerEntity,

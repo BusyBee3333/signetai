@@ -178,6 +178,7 @@ export interface PipelineGraphConfig {
 
 export interface PipelineTraversalConfig {
 	readonly enabled: boolean;
+	readonly primary: boolean;
 	readonly maxAspectsPerEntity: number;
 	readonly maxAttributesPerAspect: number;
 	readonly maxDependencyHops: number;

@@ -8,6 +8,7 @@
  */
 
 import type { ReadDb } from "../db-accessor";
+import { FTS_STOP } from "./stop-words";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,7 +29,7 @@ export function tokenizeGraphQuery(query: string): string[] {
 		.toLowerCase()
 		.replace(/[^a-z0-9\s]/g, " ")
 		.split(/\s+/)
-		.filter((t) => t.length >= 2);
+		.filter((t) => t.length >= 3 && !FTS_STOP.has(t));
 }
 
 // ---------------------------------------------------------------------------

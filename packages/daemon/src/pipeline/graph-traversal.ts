@@ -3,6 +3,8 @@ import type { ReadDb } from "../db-accessor";
 export interface TraversalResult {
 	/** Memory IDs collected from entity_attributes.memory_id */
 	readonly memoryIds: Set<string>;
+	/** Structural importance score per memory (max importance across aspects) */
+	readonly memoryScores: ReadonlyMap<string, number>;
 	/** Constraint content that must always be surfaced */
 	readonly constraints: ReadonlyArray<{
 		readonly entityName: string;
@@ -18,6 +20,8 @@ export interface TraversalResult {
 }
 
 export interface TraversalConfig {
+	/** Scope filter — when set, only collect attributes from in-scope memories */
+	readonly scope?: string | null;
 	/** Max aspects per entity, ordered by weight DESC (default 10) */
 	readonly maxAspectsPerEntity: number;
 	/** Max attributes per aspect (default 20) */
@@ -293,6 +297,7 @@ export function traverseKnowledgeGraph(
 ): TraversalResult {
 	const empty: TraversalResult = {
 		memoryIds: new Set<string>(),
+		memoryScores: new Map<string, number>(),
 		constraints: [],
 		entityCount: 0,
 		timedOut: false,
@@ -306,6 +311,7 @@ export function traverseKnowledgeGraph(
 		if (focalIds.length === 0) return empty;
 
 		const memoryIds = new Set<string>();
+		const memoryScores = new Map<string, number>();
 		const constraints: Array<{
 			entityName: string;
 			content: string;
@@ -384,20 +390,45 @@ export function traverseKnowledgeGraph(
 			for (const aspect of aspectRows) {
 				if (checkDeadline()) break;
 				activeAspectIds.add(aspect.id);
-				const attributeRows = db
-					.prepare(
-						`SELECT memory_id FROM entity_attributes
-						 WHERE aspect_id = ?
-						   AND agent_id = ?
-						   AND status = 'active'
-						 ORDER BY importance DESC
-						 LIMIT ?`,
-					)
-					.all(aspect.id, agentId, config.maxAttributesPerAspect) as Array<{ memory_id: string | null }>;
+				let attributeRows: Array<{ memory_id: string | null; importance: number }>;
+
+				if (config.scope !== undefined) {
+					const scopeClause = config.scope === null
+						? "AND m.scope IS NULL"
+						: "AND m.scope = ?";
+					const scopeArgs: unknown[] = config.scope === null ? [] : [config.scope];
+					attributeRows = db
+						.prepare(
+							`SELECT ea.memory_id, ea.importance FROM entity_attributes ea
+							 JOIN memories m ON m.id = ea.memory_id
+							 WHERE ea.aspect_id = ?
+							   AND ea.agent_id = ?
+							   AND ea.status = 'active'
+							   AND m.is_deleted = 0 ${scopeClause}
+							 ORDER BY ea.importance DESC
+							 LIMIT ?`,
+						)
+						.all(aspect.id, agentId, ...scopeArgs, config.maxAttributesPerAspect) as Array<{ memory_id: string | null; importance: number }>;
+				} else {
+					attributeRows = db
+						.prepare(
+							`SELECT memory_id, importance FROM entity_attributes
+							 WHERE aspect_id = ?
+							   AND agent_id = ?
+							   AND status = 'active'
+							 ORDER BY importance DESC
+							 LIMIT ?`,
+						)
+						.all(aspect.id, agentId, config.maxAttributesPerAspect) as Array<{ memory_id: string | null; importance: number }>;
+				}
 
 				for (const row of attributeRows) {
 					if (!row.memory_id) continue;
 					memoryIds.add(row.memory_id);
+					const current = memoryScores.get(row.memory_id);
+					if (current === undefined || row.importance > current) {
+						memoryScores.set(row.memory_id, row.importance);
+					}
 				}
 			}
 		};
@@ -432,6 +463,7 @@ export function traverseKnowledgeGraph(
 
 		return {
 			memoryIds,
+			memoryScores,
 			constraints,
 			entityCount: visitedEntities.size,
 			timedOut,
