@@ -55,18 +55,32 @@ export function getGraphBoostIds(
 		const tokens = tokenizeGraphQuery(query);
 		if (tokens.length === 0) return empty;
 
-		// Step 1: Resolve entities matching query tokens
-		const likePatterns = tokens.map((t) => `%${t}%`);
-		const likeClauses = likePatterns.map(() => "canonical_name LIKE ?").join(" OR ");
-
-		const entityRows = db
-			.prepare(
-				`SELECT id FROM entities
-				 WHERE ${likeClauses}
-				 ORDER BY mentions DESC
-				 LIMIT 20`,
-			)
-			.all(...likePatterns) as Array<{ id: string }>;
+		// Step 1: Resolve entities matching query tokens via FTS5
+		let entityRows: Array<{ id: string }> = [];
+		try {
+			const fts = tokens.join(" OR ");
+			entityRows = db
+				.prepare(
+					`SELECT e.id FROM entities_fts
+					 JOIN entities e ON e.rowid = entities_fts.rowid
+					 WHERE entities_fts MATCH ?
+					 ORDER BY rank
+					 LIMIT 20`,
+				)
+				.all(fts) as Array<{ id: string }>;
+		} catch {
+			// FTS table doesn't exist — fall back to LIKE
+			const likePatterns = tokens.map((t) => `%${t}%`);
+			const likeClauses = likePatterns.map(() => "canonical_name LIKE ?").join(" OR ");
+			entityRows = db
+				.prepare(
+					`SELECT id FROM entities
+					 WHERE ${likeClauses}
+					 ORDER BY mentions DESC
+					 LIMIT 20`,
+				)
+				.all(...likePatterns) as Array<{ id: string }>;
+		}
 
 		if (entityRows.length === 0) return empty;
 		if (Date.now() > deadline) return { ...empty, timedOut: true };

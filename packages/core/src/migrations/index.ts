@@ -39,6 +39,8 @@ import { up as nullableMemoryJobMemoryId } from "./030-nullable-memory-job-memor
 import { up as dependencyReason } from "./031-dependency-reason";
 import { up as embeddingsVectorColumn } from "./032-embeddings-vector-column";
 import { up as scope } from "./033-scope";
+import { up as scopeAwareDedup } from "./034-scope-aware-dedup";
+import { up as entityFts } from "./035-entity-fts";
 
 // -- Public interface consumed by Database.init() --
 
@@ -341,6 +343,16 @@ export const MIGRATIONS: readonly Migration[] = [
 		artifacts: {
 			columns: [{ table: "memories", column: "scope" }],
 		},
+	},
+	{
+		version: 34,
+		name: "scope-aware-dedup",
+		up: scopeAwareDedup,
+	},
+	{
+		version: 35,
+		name: "entity-fts",
+		up: entityFts,
 	},
 ];
 

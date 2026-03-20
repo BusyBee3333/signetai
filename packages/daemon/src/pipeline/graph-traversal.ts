@@ -183,6 +183,25 @@ function resolveByQueryTokens(db: ReadDb, agentId: string, queryTokens: Readonly
 	const tokens = sanitizeQueryTokens(queryTokens);
 	if (tokens.length === 0) return [];
 
+	// Try FTS5 first — proper token-boundary matching with BM25 ranking
+	try {
+		const fts = tokens.join(" OR ");
+		const rows = db
+			.prepare(
+				`SELECT e.id FROM entities_fts
+				 JOIN entities e ON e.rowid = entities_fts.rowid
+				 WHERE entities_fts MATCH ?
+				   AND e.agent_id = ?
+				 ORDER BY rank
+				 LIMIT 20`,
+			)
+			.all(fts, agentId) as Array<{ id: string }>;
+		if (rows.length > 0) return sanitizeEntityIds(rows.map((r) => r.id));
+	} catch {
+		// FTS table doesn't exist — fall through to LIKE
+	}
+
+	// LIKE fallback for pre-migration databases
 	const clauses = tokens.map(() => "(canonical_name LIKE ? OR name LIKE ?)").join(" OR ");
 	const args: string[] = [];
 	for (const token of tokens) {

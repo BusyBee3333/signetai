@@ -59,6 +59,14 @@ export interface RecallResponse {
 	results: RecallResult[];
 	query: string;
 	method: "hybrid" | "keyword";
+	entities?: Array<{
+		name: string;
+		type: string;
+		aspects: Array<{
+			name: string;
+			attributes: Array<{ content: string; status: string; importance: number }>;
+		}>;
+	}>;
 }
 
 export type EmbedFn = (text: string, cfg: EmbeddingConfig) => Promise<number[] | null>;
@@ -132,6 +140,25 @@ function buildFilterClause(params: RecallParams): FilterClause {
 // FTS5 query sanitization
 // ---------------------------------------------------------------------------
 
+// Stop words filtered from FTS queries to prevent common terms from
+// flooding OR-joined matches. Without filtering, "What are some changes
+// Caroline has faced" matches every memory containing "are" or "some".
+const FTS_STOP = new Set([
+	"a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+	"have", "has", "had", "do", "does", "did", "will", "would", "could",
+	"should", "may", "might", "shall", "can", "to", "of", "in", "for",
+	"on", "with", "at", "by", "from", "as", "into", "through", "during",
+	"before", "after", "above", "below", "between", "out", "off", "over",
+	"under", "again", "then", "once", "here", "there", "when", "where",
+	"why", "how", "all", "each", "every", "both", "few", "more", "most",
+	"other", "some", "such", "no", "nor", "not", "only", "own", "same",
+	"so", "than", "too", "very", "just", "because", "but", "and", "or",
+	"if", "while", "about", "up", "i", "me", "my", "we", "our", "you",
+	"your", "he", "him", "his", "she", "her", "it", "its", "they", "them",
+	"their", "what", "which", "who", "whom", "this", "that", "these",
+	"those", "am", "also", "any", "much", "many", "like",
+]);
+
 /**
  * Sanitize a query string for FTS5 MATCH.
  *
@@ -140,21 +167,31 @@ function buildFilterClause(params: RecallParams): FilterClause {
  * any colon-prefixed term that isn't `content:` will throw
  * "no such column". Strip colons and quote terms that contain special
  * characters to prevent syntax errors.
+ *
+ * Stop words are removed, then remaining terms are joined with OR for
+ * recall-oriented matching. BM25 ranks documents with more matching
+ * terms higher automatically.
  */
 function sanitizeFtsQuery(raw: string): string {
-	// Split on OR (preserved as FTS5 operator) and whitespace
-	return raw
+	const tokens = raw
 		.split(/\s+/)
 		.map((token) => {
-			if (token === "OR" || token === "AND" || token === "NOT") return token;
 			// Strip characters that are FTS5 syntax: colons, quotes, parens, asterisks, carets
 			const cleaned = token.replace(/[":()^*]/g, "").trim();
 			if (!cleaned) return null;
+			// Filter stop words — prevents common terms from flooding OR results
+			if (FTS_STOP.has(cleaned.toLowerCase())) return null;
+			// Skip single-character tokens (not useful for search)
+			if (cleaned.length < 2) return null;
 			// Double-quote the term to treat it as a literal phrase token
 			return `"${cleaned}"`;
 		})
-		.filter(Boolean)
-		.join(" ");
+		.filter(Boolean) as string[];
+
+	if (tokens.length === 0) return "";
+	if (tokens.length === 1) return tokens[0];
+	// OR for recall-oriented matching; BM25 handles ranking
+	return tokens.join(" OR ");
 }
 
 // ---------------------------------------------------------------------------
@@ -622,9 +659,124 @@ export async function hybridRecall(
 		}
 	}
 
+	// --- Entity context: structured KG data for entities found in the query ---
+	let entityContext: Array<{
+		name: string;
+		type: string;
+		aspects: Array<{
+			name: string;
+			attributes: Array<{ content: string; status: string; importance: number }>;
+		}>;
+	}> = [];
+
+	if (cfg.pipelineV2.graph.enabled && cfg.pipelineV2.traversal?.enabled) {
+		try {
+			const queryTokens = tokenizeGraphQuery(query);
+			if (queryTokens.length > 0) {
+				const agentId = params.agentId ?? "default";
+				entityContext = getDbAccessor().withReadDb((db) => {
+					const focal = resolveFocalEntities(db, agentId, { queryTokens });
+					if (focal.entityIds.length === 0) return [];
+
+					// Exclude pinned entities — they always resolve (e.g. the
+					// user's own entity) and add noise to constructed memories.
+					// Filter to person/concept/extracted types only.
+					const pinned = new Set(focal.pinnedEntityIds);
+					const ids = focal.entityIds.filter((id) => !pinned.has(id));
+					if (ids.length === 0) return [];
+
+					const placeholders = ids.map(() => "?").join(", ");
+					const entities = db
+						.prepare(
+							`SELECT id, name, entity_type FROM entities
+							 WHERE id IN (${placeholders})
+							   AND entity_type IN ('person', 'concept', 'extracted')`,
+						)
+						.all(...ids) as Array<{
+						id: string;
+						name: string;
+						entity_type: string;
+					}>;
+
+					return entities.map((ent) => {
+						const aspects = db
+							.prepare(
+								`SELECT id, name FROM entity_aspects
+								 WHERE entity_id = ? AND agent_id = ?
+								 ORDER BY weight DESC LIMIT 10`,
+							)
+							.all(ent.id, agentId) as Array<{ id: string; name: string }>;
+
+						return {
+							name: ent.name,
+							type: ent.entity_type,
+							aspects: aspects.map((asp) => {
+								const attrs = db
+									.prepare(
+										`SELECT content, status, importance FROM entity_attributes
+										 WHERE aspect_id = ? AND agent_id = ? AND status = 'active'
+										 ORDER BY importance DESC LIMIT 5`,
+									)
+									.all(asp.id, agentId) as Array<{
+									content: string;
+									status: string;
+									importance: number;
+								}>;
+								return { name: asp.name, attributes: attrs };
+							}).filter((a) => a.attributes.length > 0),
+						};
+					}).filter((e) => e.aspects.length > 0);
+				});
+			}
+		} catch (e) {
+			logger.warn("memory", "Entity context fetch failed (non-fatal)", {
+				error: e instanceof Error ? e.message : String(e),
+			});
+		}
+	}
+
+	// --- Constructed memories: synthesize readable text from graph structure ---
+	// Cap at 3 to avoid flooding context with graph data over flat results
+	if (entityContext.length > 0) {
+		let constructed = 0;
+		for (const entity of entityContext) {
+			if (constructed >= 3) break;
+			const sections: string[] = [];
+			for (const aspect of entity.aspects) {
+				const attrs = aspect.attributes.map((a) => a.content).join(". ");
+				if (attrs) sections.push(`${aspect.name}: ${attrs}`);
+			}
+			if (sections.length === 0) continue;
+
+			const text = `About ${entity.name} (${entity.type}):\n${sections.join("\n")}`;
+			const syntheticId = `constructed:${entity.name}`;
+			if (existingIds.has(syntheticId)) continue;
+			existingIds.add(syntheticId);
+
+			results.push({
+				id: syntheticId,
+				content: text,
+				content_length: text.length,
+				truncated: false,
+				score: 0.85,
+				source: "constructed",
+				type: "knowledge",
+				tags: null,
+				pinned: false,
+				importance: 8,
+				who: "",
+				project: null,
+				created_at: new Date().toISOString(),
+				supplementary: true,
+			});
+			constructed++;
+		}
+	}
+
 	return {
 		results,
 		query,
 		method: vectorMap.size > 0 ? "hybrid" : "keyword",
+		entities: entityContext.length > 0 ? entityContext : undefined,
 	};
 }
