@@ -95,6 +95,7 @@ function rowToDependency(r: Record<string, unknown>): EntityDependency {
 		aspectId: (r.aspect_id as string) ?? null,
 		dependencyType: r.dependency_type as DependencyType,
 		strength: r.strength as number,
+		confidence: typeof r.confidence === "number" ? r.confidence : 0.7,
 		reason: typeof r.reason === "string" ? r.reason : null,
 		createdAt: r.created_at as string,
 		updatedAt: r.updated_at as string,
@@ -329,6 +330,7 @@ export interface UpsertDependencyParams {
 	readonly aspectId?: string;
 	readonly dependencyType: DependencyType;
 	readonly strength?: number;
+	readonly confidence?: number;
 	readonly reason?: string;
 }
 
@@ -354,14 +356,16 @@ export function upsertDependency(
 
 		if (existing) {
 			const reason = params.reason ?? (existing.reason as string | null);
+			const conf = params.confidence ?? (typeof existing.confidence === "number" ? existing.confidence : 0.7);
 			db.prepare(
 				`UPDATE entity_dependencies
-				 SET strength = ?, aspect_id = ?, reason = ?, updated_at = ?
+				 SET strength = ?, aspect_id = ?, reason = ?, confidence = ?, updated_at = ?
 				 WHERE id = ? AND agent_id = ?`,
 			).run(
 				params.strength ?? (existing.strength as number),
 				params.aspectId ?? (existing.aspect_id as string | null),
 				reason,
+				conf,
 				ts,
 				existing.id as string,
 				params.agentId,
@@ -371,17 +375,19 @@ export function upsertDependency(
 				strength: params.strength ?? (existing.strength as number),
 				aspect_id: params.aspectId ?? (existing.aspect_id as string | null),
 				reason,
+				confidence: conf,
 				updated_at: ts,
 			});
 		}
 
 		const id = crypto.randomUUID();
 		const reason = params.reason ?? null;
+		const conf = params.confidence ?? 0.7;
 		db.prepare(
 			`INSERT INTO entity_dependencies
 			 (id, source_entity_id, target_entity_id, agent_id,
-			  aspect_id, dependency_type, strength, reason, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  aspect_id, dependency_type, strength, confidence, reason, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run(
 			id,
 			params.sourceEntityId,
@@ -390,6 +396,7 @@ export function upsertDependency(
 			params.aspectId ?? null,
 			params.dependencyType,
 			params.strength ?? 0.5,
+			conf,
 			reason,
 			ts,
 			ts,
@@ -403,6 +410,7 @@ export function upsertDependency(
 			aspectId: params.aspectId ?? null,
 			dependencyType: params.dependencyType,
 			strength: params.strength ?? 0.5,
+			confidence: conf,
 			reason,
 			createdAt: ts,
 			updatedAt: ts,

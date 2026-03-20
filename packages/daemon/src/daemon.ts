@@ -7601,8 +7601,11 @@ app.post("/api/knowledge/expand", async (c) => {
 	const traversalCfg = cfg.pipelineV2.traversal ?? {
 		maxAspectsPerEntity: 10,
 		maxAttributesPerAspect: 20,
-		maxDependencyHops: 30,
+		maxDependencyHops: 10,
 		minDependencyStrength: 0.3,
+		maxBranching: 4,
+		maxTraversalPaths: 50,
+		minConfidence: 0.5,
 		timeoutMs: 500,
 	};
 

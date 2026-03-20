@@ -183,6 +183,9 @@ export interface PipelineTraversalConfig {
 	readonly maxAttributesPerAspect: number;
 	readonly maxDependencyHops: number;
 	readonly minDependencyStrength: number;
+	readonly maxBranching: number;
+	readonly maxTraversalPaths: number;
+	readonly minConfidence: number;
 	readonly timeoutMs: number;
 	readonly boostWeight: number;
 	readonly constraintBudgetChars: number;
@@ -662,6 +665,7 @@ export interface EntityDependency {
 	readonly aspectId: string | null;
 	readonly dependencyType: DependencyType;
 	readonly strength: number;
+	readonly confidence: number;
 	readonly reason: string | null;
 	readonly createdAt: string;
 	readonly updatedAt: string;

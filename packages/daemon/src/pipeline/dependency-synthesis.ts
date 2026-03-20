@@ -260,6 +260,7 @@ async function tick(deps: DependencySynthesisDeps): Promise<void> {
 					agentId: AGENT_ID,
 					dependencyType: result.dep_type as DependencyType,
 					strength: 0.5,
+					confidence: 0.5,
 					reason: result.reason || null,
 				});
 				created++;

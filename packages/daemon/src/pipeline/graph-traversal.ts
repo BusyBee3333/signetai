@@ -26,10 +26,16 @@ export interface TraversalConfig {
 	readonly maxAspectsPerEntity: number;
 	/** Max attributes per aspect (default 20) */
 	readonly maxAttributesPerAspect: number;
-	/** Max one-hop dependency expansions (default 30) */
+	/** Max dependency expansions (default 10) */
 	readonly maxDependencyHops: number;
 	/** Minimum dependency strength to traverse (default 0.3) */
 	readonly minDependencyStrength: number;
+	/** Max fan-out per focal entity (default 4) */
+	readonly maxBranching?: number;
+	/** Total memory ID budget — early exit when reached (default 50) */
+	readonly maxTraversalPaths?: number;
+	/** Minimum confidence to traverse an edge (default 0.5) */
+	readonly minConfidence?: number;
 	/** Timeout in ms (default 500) */
 	readonly timeoutMs: number;
 	/** Filter aspects by canonical_name substring (on-demand expansion) */
@@ -438,23 +444,34 @@ export function traverseKnowledgeGraph(
 			collectForEntity(entityId);
 		}
 
-		if (!timedOut) {
+		const budget = config.maxTraversalPaths ?? 50;
+		const branching = config.maxBranching ?? 4;
+		const minConf = config.minConfidence ?? 0.5;
+
+		if (!timedOut && memoryIds.size < budget) {
 			const dependencyPlaceholders = focalIds.map(() => "?").join(", ");
 			const dependencyRows = db
 				.prepare(
 					`SELECT target_entity_id FROM entity_dependencies
 					 WHERE agent_id = ?
 					   AND source_entity_id IN (${dependencyPlaceholders})
-					   AND strength >= ?
-					 ORDER BY strength DESC
+					   AND (COALESCE(confidence, 0.7) * strength) >= ?
+					   AND COALESCE(confidence, 0.7) >= ?
+					 ORDER BY (COALESCE(confidence, 0.7) * strength) DESC
 					 LIMIT ?`,
 				)
-				.all(agentId, ...focalIds, config.minDependencyStrength, config.maxDependencyHops) as Array<{
+				.all(
+					agentId,
+					...focalIds,
+					config.minDependencyStrength,
+					minConf,
+					branching * focalIds.length,
+				) as Array<{
 				target_entity_id: string;
 			}>;
 
 			for (const row of dependencyRows) {
-				if (checkDeadline()) break;
+				if (checkDeadline() || memoryIds.size >= budget) break;
 				collectForEntity(row.target_entity_id);
 			}
 		}

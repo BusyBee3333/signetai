@@ -364,6 +364,7 @@ async function processDependencyBatch(
 						aspectId: aspect.id,
 						dependencyType: result.dep_type as DependencyType,
 						strength: 0.5,
+						confidence: 0.7,
 						reason: result.reason,
 					});
 					depsCreated++;

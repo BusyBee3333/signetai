@@ -969,8 +969,11 @@ export async function handleSessionStart(req: SessionStartRequest): Promise<Sess
 	const traversalRuntimeCfg = {
 		maxAspectsPerEntity: traversalCfg?.maxAspectsPerEntity ?? 10,
 		maxAttributesPerAspect: traversalCfg?.maxAttributesPerAspect ?? 20,
-		maxDependencyHops: traversalCfg?.maxDependencyHops ?? 30,
+		maxDependencyHops: traversalCfg?.maxDependencyHops ?? 10,
 		minDependencyStrength: traversalCfg?.minDependencyStrength ?? 0.3,
+		maxBranching: traversalCfg?.maxBranching ?? 4,
+		maxTraversalPaths: traversalCfg?.maxTraversalPaths ?? 50,
+		minConfidence: traversalCfg?.minConfidence ?? 0.5,
 		timeoutMs: traversalCfg?.timeoutMs ?? 500,
 		boostWeight: traversalCfg?.boostWeight ?? 0.2,
 		constraintBudgetChars: traversalCfg?.constraintBudgetChars ?? 1000,
