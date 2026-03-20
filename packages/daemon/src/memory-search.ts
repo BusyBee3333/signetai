@@ -403,7 +403,7 @@ export async function hybridRecall(
 		if (cfg.pipelineV2.graph.enabled && cfg.pipelineV2.graph.boostWeight > 0) {
 			try {
 				const graphResult = getDbAccessor().withReadDb((db) =>
-					getGraphBoostIds(query, db, cfg.pipelineV2.graph.boostTimeoutMs),
+					getGraphBoostIds(query, db, cfg.pipelineV2.graph.boostTimeoutMs, params.agentId),
 				);
 				if (graphResult.graphLinkedIds.size > 0) {
 					const gw = cfg.pipelineV2.graph.boostWeight;
@@ -818,14 +818,18 @@ export async function hybridRecall(
 	if (focalEids.length > 0) {
 		try {
 			const agentId = params.agentId ?? "default";
+			const cap = Math.max(3, Math.ceil(limit * 0.3));
 			const blocks = getDbAccessor().withReadDb((db) =>
-				constructContextBlocks(db, agentId, focalEids, limit),
+				constructContextBlocks(db, agentId, focalEids, cap),
 			);
 			const now = new Date().toISOString();
+			let added = 0;
 			for (const block of blocks) {
+				if (added >= cap) break;
 				const syntheticId = `constructed:${block.provenance.entityName}`;
 				if (existingIds.has(syntheticId)) continue;
 				existingIds.add(syntheticId);
+				added++;
 
 				results.push({
 					id: syntheticId,
@@ -834,10 +838,10 @@ export async function hybridRecall(
 					truncated: false,
 					score: Math.round(block.score * 100) / 100,
 					source: "constructed",
-					type: "knowledge",
+					type: "semantic",
 					tags: null,
 					pinned: false,
-					importance: 8,
+					importance: 0.85,
 					who: "",
 					project: null,
 					created_at: now,

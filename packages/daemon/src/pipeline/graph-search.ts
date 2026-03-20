@@ -44,6 +44,7 @@ export function getGraphBoostIds(
 	query: string,
 	db: ReadDb,
 	timeoutMs: number,
+	agentId?: string,
 ): GraphBoostResult {
 	const empty: GraphBoostResult = {
 		graphLinkedIds: new Set(),
@@ -58,6 +59,7 @@ export function getGraphBoostIds(
 
 		// Step 1: Resolve entities matching query tokens via FTS5
 		let entityRows: Array<{ id: string }> = [];
+		const agentFilter = agentId ?? "default";
 		try {
 			const fts = tokens.join(" OR ");
 			entityRows = db
@@ -65,10 +67,11 @@ export function getGraphBoostIds(
 					`SELECT e.id FROM entities_fts
 					 JOIN entities e ON e.rowid = entities_fts.rowid
 					 WHERE entities_fts MATCH ?
+					   AND e.agent_id = ?
 					 ORDER BY rank
 					 LIMIT 20`,
 				)
-				.all(fts) as Array<{ id: string }>;
+				.all(fts, agentFilter) as Array<{ id: string }>;
 		} catch {
 			// FTS table doesn't exist — fall back to LIKE
 			const likePatterns = tokens.map((t) => `%${t}%`);
@@ -76,11 +79,12 @@ export function getGraphBoostIds(
 			entityRows = db
 				.prepare(
 					`SELECT id FROM entities
-					 WHERE ${likeClauses}
+					 WHERE agent_id = ?
+					   AND (${likeClauses})
 					 ORDER BY mentions DESC
 					 LIMIT 20`,
 				)
-				.all(...likePatterns) as Array<{ id: string }>;
+				.all(agentFilter, ...likePatterns) as Array<{ id: string }>;
 		}
 
 		if (entityRows.length === 0) return empty;
