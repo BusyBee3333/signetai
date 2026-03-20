@@ -114,6 +114,7 @@ const BASE_TOOL_NAMES = new Set<string>([
 	"memory_forget",
 	"memory_feedback",
 	"knowledge_expand",
+	"knowledge_expand_session",
 	"agent_peers",
 	"agent_message_send",
 	"agent_message_inbox",
@@ -1315,6 +1316,42 @@ export async function createMcpServer(opts?: McpServerOptions): Promise<McpServe
 
 			if (!result.ok) {
 				return errorResult(`Expand failed: ${result.error}`);
+			}
+			return textResult(result.data);
+		},
+	);
+
+	// ------------------------------------------------------------------
+	// knowledge_expand_session — temporal drill-down via session DAG
+	// ------------------------------------------------------------------
+	server.registerTool(
+		"knowledge_expand_session",
+		{
+			title: "Expand Entity Sessions",
+			description:
+				"Drill into session summaries that reference a given " +
+				"entity. Returns formatted session summary text linked " +
+				"through memory→entity mentions.",
+			inputSchema: z.object({
+				entity_name: z.string().describe("Entity name to look up"),
+				session_id: z.string().optional().describe("Filter to a specific session key"),
+				time_range: z.string().optional().describe('Time range filter: "last_week", "last_month", or ISO date'),
+				max_results: z.number().optional().describe("Max summaries to return (default 10)"),
+			}),
+		},
+		async ({ entity_name, session_id, time_range, max_results }) => {
+			const result = await daemonFetch<unknown>(baseUrl, "/api/knowledge/expand/session", {
+				method: "POST",
+				body: {
+					entityName: entity_name,
+					sessionId: session_id,
+					timeRange: time_range,
+					maxResults: max_results ?? 10,
+				},
+			});
+
+			if (!result.ok) {
+				return errorResult(`Session expansion failed: ${result.error}`);
 			}
 			return textResult(result.data);
 		},

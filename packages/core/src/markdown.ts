@@ -67,6 +67,15 @@ Example: to use an API key stored as "OPENAI_API_KEY", call \`secret_exec\`
 with \`command: "curl -H \\"Authorization: Bearer $OPENAI_API_KEY\\" ..."\`
 and \`secrets: { "OPENAI_API_KEY": "OPENAI_API_KEY" }\`.
 
+Knowledge Graph
+---
+
+Signet maintains a knowledge graph of entities extracted from your
+conversations. Use these MCP tools to explore it:
+
+- \`knowledge_expand\` — drill into an entity's aspects, attributes, constraints, and dependencies
+- \`knowledge_expand_session\` — find session summaries linked to an entity (temporal drill-down)
+
 About This System
 ---
 

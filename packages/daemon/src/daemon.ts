@@ -119,6 +119,7 @@ import {
 	listKnowledgeEntities,
 	unpinEntity,
 } from "./knowledge-graph";
+import { walkImpact } from "./graph-impact";
 import { buildMemoryTimeline } from "./memory-timeline";
 import { type RecallParams, hybridRecall } from "./memory-search";
 import { ONEPASSWORD_SERVICE_ACCOUNT_SECRET, importOnePasswordSecrets, listOnePasswordVaults } from "./onepassword.js";
@@ -134,7 +135,9 @@ import {
 	startRetentionWorker,
 	stopPipeline,
 } from "./pipeline";
+import { clusterEntities } from "./pipeline/community-detection";
 import { getGraphBoostIds } from "./pipeline/graph-search";
+import { linkMemoryToEntities } from "./inline-entity-linker";
 import {
 	getTraversalStatus,
 	invalidateTraversalCache,
@@ -638,27 +641,28 @@ function blobToVector(blob: Buffer, dimensions: number | null): number[] {
  * Single sentences exceeding 2x target get hard-split at targetChars.
  */
 function chunkBySentence(text: string, targetChars: number): readonly string[] {
-	// Split on sentence-ending punctuation followed by whitespace/newline
-	const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
-	const chunks: string[] = [];
+	// Split on sentence-ending punctuation followed by whitespace/newline,
+	// or on markdown bullet/heading boundaries (preserves list items as units)
+	const sentences = text.split(/(?<=[.!?])\s+|(?=^[-*] |\n## )/m).filter(Boolean);
+	const raw: string[] = [];
 	let current = "";
 
 	for (const sentence of sentences) {
 		// If a single sentence exceeds 2x target, hard-split it
 		if (sentence.length > targetChars * 2) {
 			if (current.length > 0) {
-				chunks.push(current.trim());
+				raw.push(current.trim());
 				current = "";
 			}
 			for (let i = 0; i < sentence.length; i += targetChars) {
-				chunks.push(sentence.slice(i, i + targetChars).trim());
+				raw.push(sentence.slice(i, i + targetChars).trim());
 			}
 			continue;
 		}
 
 		const combined = current.length > 0 ? `${current} ${sentence}` : sentence;
 		if (combined.length > targetChars && current.length > 0) {
-			chunks.push(current.trim());
+			raw.push(current.trim());
 			current = sentence;
 		} else {
 			current = combined;
@@ -666,10 +670,26 @@ function chunkBySentence(text: string, targetChars: number): readonly string[] {
 	}
 
 	if (current.trim().length > 0) {
-		chunks.push(current.trim());
+		raw.push(current.trim());
 	}
 
-	return chunks.filter((c) => c.length > 0);
+	const filtered = raw.filter((c) => c.length > 0);
+	if (filtered.length <= 1) return filtered;
+
+	// Add overlap: append the first ~25% of the next chunk to each chunk.
+	// This ensures information near boundaries appears in both chunks,
+	// improving recall when search queries match boundary content.
+	const chunks: string[] = [];
+	for (let i = 0; i < filtered.length; i++) {
+		if (i < filtered.length - 1) {
+			const overlap = filtered[i + 1].slice(0, Math.floor(targetChars * 0.25));
+			chunks.push(`${filtered[i]} ${overlap}`.trim());
+		} else {
+			chunks.push(filtered[i]);
+		}
+	}
+
+	return chunks;
 }
 
 function parseTagsField(raw: string | null): string[] {
@@ -1414,6 +1434,12 @@ app.use("/api/sessions/summaries", async (c, next) => {
 	return requirePermission("recall", authConfig)(c, next);
 });
 app.use("/api/knowledge/expand", async (c, next) => {
+	return requirePermission("recall", authConfig)(c, next);
+});
+app.use("/api/knowledge/expand/session", async (c, next) => {
+	return requirePermission("recall", authConfig)(c, next);
+});
+app.use("/api/graph/impact", async (c, next) => {
 	return requirePermission("recall", authConfig)(c, next);
 });
 
@@ -2488,11 +2514,13 @@ app.post("/api/memory/remember", async (c) => {
 			const memType = inferType(chunk);
 
 			try {
-				// Dedup check + insert
+				// Dedup check + insert (scope-aware: same content in different scopes is not a duplicate)
 				const inserted = getDbAccessor().withWriteTx((db) => {
-					const byHash = db
-						.prepare(`SELECT id FROM memories WHERE content_hash = ? AND is_deleted = 0 LIMIT 1`)
-						.get(chunkNormalized.contentHash) as { id: string } | undefined;
+					const byHash = scope !== null
+						? db.prepare(`SELECT id FROM memories WHERE content_hash = ? AND scope = ? AND is_deleted = 0 LIMIT 1`)
+							.get(chunkNormalized.contentHash, scope) as { id: string } | undefined
+						: db.prepare(`SELECT id FROM memories WHERE content_hash = ? AND scope IS NULL AND is_deleted = 0 LIMIT 1`)
+							.get(chunkNormalized.contentHash) as { id: string } | undefined;
 					if (byHash) return false;
 
 					txIngestEnvelope(db, {
@@ -2544,6 +2572,12 @@ app.post("/api/memory/remember", async (c) => {
 						} else {
 							const embId = crypto.randomUUID();
 							const blob = vectorToBlob(vec);
+							// Use memory-scoped content hash for embeddings so the same
+							// content in different scopes each gets its own vector row
+							// (vector search joins on source_id, not content_hash)
+							const embHash = scope
+								? `${chunkNormalized.contentHash}:${scope}`
+								: chunkNormalized.contentHash;
 							getDbAccessor().withWriteTx((db) => {
 								syncVecDeleteBySourceId(db, "memory", chunkId);
 								db.prepare(`DELETE FROM embeddings WHERE source_type = 'memory' AND source_id = ?`).run(chunkId);
@@ -2553,7 +2587,7 @@ app.post("/api/memory/remember", async (c) => {
 									VALUES (?, ?, ?, ?, 'memory', ?, ?, ?)
 								`).run(
 									embId,
-									chunkNormalized.contentHash,
+									embHash,
 									blob,
 									vec.length,
 									chunkId,
@@ -2573,6 +2607,15 @@ app.post("/api/memory/remember", async (c) => {
 						chunkId,
 						error: String(e),
 					});
+				}
+
+				// Inline entity linking for chunk
+				try {
+					getDbAccessor().withWriteTx((db) => {
+						linkMemoryToEntities(db, chunkId, chunk, "default");
+					});
+				} catch {
+					// Non-fatal — pipeline extraction handles deeper linking
 				}
 
 				// Enqueue pipeline extraction if enabled
@@ -2646,25 +2689,30 @@ app.post("/api/memory/remember", async (c) => {
 		// On UNIQUE constraint race (two concurrent inserts with same
 		// content_hash), catch the error and re-read the winner.
 		const result = getDbAccessor().withWriteTx((db) => {
-			// Check sourceId-based dedupe first
+			// Check sourceId-based dedupe first (scope-aware)
 			if (sourceId) {
-				const bySource = db
-					.prepare(
+				const bySource = (scope !== null
+					? db.prepare(
 						`SELECT id, type, tags, pinned, importance, content
-						 FROM memories WHERE source_type = ? AND source_id = ? AND is_deleted = 0 LIMIT 1`,
-					)
-					.get(sourceType, sourceId) as DedupeRow | undefined;
+						 FROM memories WHERE source_type = ? AND source_id = ? AND scope = ? AND is_deleted = 0 LIMIT 1`,
+					).get(sourceType, sourceId, scope)
+					: db.prepare(
+						`SELECT id, type, tags, pinned, importance, content
+						 FROM memories WHERE source_type = ? AND source_id = ? AND scope IS NULL AND is_deleted = 0 LIMIT 1`,
+					).get(sourceType, sourceId)) as DedupeRow | undefined;
 				if (bySource) return { deduped: true as const, row: bySource };
 			}
 
-			// Check content_hash dedupe
-			const byHash = db
-				.prepare(
+			// Check content_hash dedupe (scope-aware: same content in different scopes is not a duplicate)
+			const byHash = (scope !== null
+				? db.prepare(
 					`SELECT id, type, tags, pinned, importance, content
-					 FROM memories
-					 WHERE content_hash = ? AND is_deleted = 0 LIMIT 1`,
-				)
-				.get(contentHash) as DedupeRow | undefined;
+					 FROM memories WHERE content_hash = ? AND scope = ? AND is_deleted = 0 LIMIT 1`,
+				).get(contentHash, scope)
+				: db.prepare(
+					`SELECT id, type, tags, pinned, importance, content
+					 FROM memories WHERE content_hash = ? AND scope IS NULL AND is_deleted = 0 LIMIT 1`,
+				).get(contentHash)) as DedupeRow | undefined;
 			if (byHash) return { deduped: true as const, row: byHash };
 
 			// No duplicate — insert
@@ -2751,7 +2799,9 @@ app.post("/api/memory/remember", async (c) => {
 					memoryId: id,
 				});
 			} else {
-				const hash = contentHash;
+				// Scope-qualify content hash so same content in different scopes
+				// each gets its own embedding row for vector search
+				const embHash = scope ? `${contentHash}:${scope}` : contentHash;
 				const blob = vectorToBlob(vec);
 				const embId = crypto.randomUUID();
 
@@ -2762,7 +2812,7 @@ app.post("/api/memory/remember", async (c) => {
 						INSERT INTO embeddings
 						  (id, content_hash, vector, dimensions, source_type, source_id, chunk_text, created_at)
 						VALUES (?, ?, ?, ?, 'memory', ?, ?, ?)
-					`).run(embId, hash, blob, vec.length, id, normalizedContent.storageContent, now);
+					`).run(embId, embHash, blob, vec.length, id, normalizedContent.storageContent, now);
 					syncVecInsert(db, embId, vec);
 					db.prepare(`UPDATE memories SET embedding_model = ? WHERE id = ?`).run(cfg.embedding.model, id);
 				});
@@ -2773,6 +2823,27 @@ app.post("/api/memory/remember", async (c) => {
 		logger.warn("memory", "Embedding failed (memory saved without vector)", {
 			id,
 			error: String(e),
+		});
+	}
+
+	// Inline entity linking — immediate KG integration so KA traversal
+	// can find this memory without waiting for async pipeline extraction.
+	let linkResult: { linked: number; created: number; entityIds: string[] } | null = null;
+	try {
+		linkResult = getDbAccessor().withWriteTx((db) =>
+			linkMemoryToEntities(db, id, normalizedContent.storageContent, "default"),
+		);
+		if (linkResult.linked > 0) {
+			logger.debug("memory", "Inline entity linking", {
+				id,
+				linked: linkResult.linked,
+				created: linkResult.created,
+			});
+		}
+	} catch (e) {
+		logger.warn("memory", "Inline entity linking failed (non-fatal)", {
+			id,
+			error: e instanceof Error ? e.message : String(e),
 		});
 	}
 
@@ -2800,6 +2871,7 @@ app.post("/api/memory/remember", async (c) => {
 		type: memType,
 		pinned: !!pinned,
 		embedded,
+		entities: linkResult?.linked ?? 0,
 	});
 
 	return c.json({
@@ -2810,6 +2882,7 @@ app.post("/api/memory/remember", async (c) => {
 		importance,
 		content: normalizedContent.storageContent,
 		embedded,
+		entities_linked: linkResult?.linked ?? 0,
 	});
 });
 
@@ -7193,6 +7266,14 @@ app.get("/api/repair/cold-stats", (c) => {
 	}));
 });
 
+app.post("/api/repair/cluster-entities", (c) => {
+	const agentId = c.req.query("agent_id") ?? "default";
+	const result = getDbAccessor().withWriteTx((db) =>
+		clusterEntities(db, agentId),
+	);
+	return c.json(result);
+});
+
 // ============================================================================
 // Troubleshooter — live terminal command execution
 // ============================================================================
@@ -7450,6 +7531,28 @@ app.get("/api/knowledge/stats", (c) => {
 	return c.json(getKnowledgeStats(getDbAccessor(), agentId));
 });
 
+app.get("/api/knowledge/communities", (c) => {
+	const agentId = c.req.query("agent_id") ?? "default";
+	const rows = getDbAccessor().withReadDb((db) => {
+		return db
+			.prepare(
+				`SELECT id, name, cohesion, member_count, created_at, updated_at
+				 FROM entity_communities
+				 WHERE agent_id = ?
+				 ORDER BY member_count DESC`,
+			)
+			.all(agentId) as ReadonlyArray<{
+			id: string;
+			name: string | null;
+			cohesion: number;
+			member_count: number;
+			created_at: string;
+			updated_at: string;
+		}>;
+	});
+	return c.json({ items: rows, count: rows.length });
+});
+
 app.get("/api/knowledge/traversal/status", (c) => {
 	return c.json({
 		status: getTraversalStatus(),
@@ -7511,6 +7614,9 @@ app.post("/api/knowledge/expand", async (c) => {
 			maxAttributesPerAspect: traversalCfg.maxAttributesPerAspect,
 			maxDependencyHops: traversalCfg.maxDependencyHops,
 			minDependencyStrength: traversalCfg.minDependencyStrength,
+			maxBranching: traversalCfg.maxBranching,
+			maxTraversalPaths: traversalCfg.maxTraversalPaths,
+			minConfidence: traversalCfg.minConfidence,
 			timeoutMs: traversalCfg.timeoutMs,
 			aspectFilter: aspectFilter || undefined,
 		});
@@ -7632,6 +7738,143 @@ app.post("/api/knowledge/expand", async (c) => {
 			memories: hydratedMemories,
 		});
 	});
+});
+
+// ============================================================================
+// Session Expansion (DP-4)
+// ============================================================================
+
+app.post("/api/knowledge/expand/session", async (c) => {
+	const body = await c.req.json().catch(() => ({}));
+	const entityName =
+		typeof body.entityName === "string" ? body.entityName.trim() : "";
+	const sessionId =
+		typeof body.sessionId === "string" ? body.sessionId.trim() : undefined;
+	const timeRange =
+		typeof body.timeRange === "string" ? body.timeRange.trim() : undefined;
+	const maxResults =
+		typeof body.maxResults === "number"
+			? Math.max(1, Math.min(body.maxResults, 50))
+			: 10;
+
+	if (!entityName) {
+		return c.json({ error: "entityName is required" }, 400);
+	}
+
+	return getDbAccessor().withReadDb((db) => {
+		// Check if session_summaries table exists
+		const tbl = db
+			.prepare(
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_summaries'",
+			)
+			.get() as { name: string } | undefined;
+		if (!tbl) {
+			return c.json({ entityName, summaries: [], total: 0 });
+		}
+
+		// Resolve entity by canonical_name match
+		const entity = db
+			.prepare(
+				`SELECT id, name FROM entities
+				 WHERE canonical_name LIKE ?
+				   AND agent_id = 'default'
+				 ORDER BY mentions DESC, updated_at DESC
+				 LIMIT 1`,
+			)
+			.get(`%${entityName.toLowerCase()}%`) as
+			| { id: string; name: string }
+			| undefined;
+
+		if (!entity) {
+			return c.json({ entityName, summaries: [], total: 0 });
+		}
+
+		// Build query: session_summaries ← session_summary_memories
+		//   ← memory_entity_mentions → entities
+		const conditions = [
+			"mem.entity_id = ?",
+			"ss.kind = 'session'",
+		];
+		const args: Array<string | number> = [entity.id];
+
+		if (sessionId) {
+			conditions.push("ss.session_key = ?");
+			args.push(sessionId);
+		}
+
+		if (timeRange === "last_week") {
+			conditions.push(
+				"ss.latest_at >= datetime('now', '-7 days')",
+			);
+		} else if (timeRange === "last_month") {
+			conditions.push(
+				"ss.latest_at >= datetime('now', '-30 days')",
+			);
+		} else if (timeRange && timeRange.length > 0) {
+			conditions.push("ss.latest_at >= ?");
+			args.push(timeRange);
+		}
+
+		const rows = db
+			.prepare(
+				`SELECT DISTINCT ss.id, ss.content, ss.session_key,
+				        ss.harness, ss.earliest_at, ss.latest_at
+				 FROM session_summaries ss
+				 JOIN session_summary_memories ssm
+				   ON ssm.summary_id = ss.id
+				 JOIN memory_entity_mentions mem
+				   ON mem.memory_id = ssm.memory_id
+				 WHERE ${conditions.join(" AND ")}
+				 ORDER BY ss.latest_at DESC
+				 LIMIT ?`,
+			)
+			.all(...args, maxResults) as Array<{
+			id: string;
+			content: string;
+			session_key: string | null;
+			harness: string | null;
+			earliest_at: string;
+			latest_at: string;
+		}>;
+
+		return c.json({
+			entityName: entity.name,
+			summaries: rows.map((row) => ({
+				id: row.id,
+				sessionKey: row.session_key,
+				harness: row.harness,
+				earliestAt: row.earliest_at,
+				latestAt: row.latest_at,
+				content: row.content,
+			})),
+			total: rows.length,
+		});
+	});
+});
+
+// ============================================================================
+// Graph Impact Analysis (DP-4)
+// ============================================================================
+
+app.post("/api/graph/impact", async (c) => {
+	const body = await c.req.json().catch(() => ({}));
+	const entityId =
+		typeof body.entityId === "string" ? body.entityId.trim() : "";
+	const direction =
+		body.direction === "upstream" ? "upstream" : "downstream";
+	const maxDepth =
+		typeof body.maxDepth === "number"
+			? Math.max(1, Math.min(body.maxDepth, 10))
+			: 3;
+
+	if (!entityId) {
+		return c.json({ error: "entityId is required" }, 400);
+	}
+
+	const result = getDbAccessor().withReadDb((db) =>
+		walkImpact(db, { entityId, direction, maxDepth, timeoutMs: 200 }),
+	);
+	return c.json(result);
 });
 
 // ============================================================================

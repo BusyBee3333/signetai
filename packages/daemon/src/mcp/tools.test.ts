@@ -93,6 +93,9 @@ describe("createMcpServer", () => {
 		expect(names).toContain("memory_list");
 		expect(names).toContain("memory_modify");
 		expect(names).toContain("memory_forget");
+		expect(names).toContain("memory_feedback");
+		expect(names).toContain("knowledge_expand");
+		expect(names).toContain("knowledge_expand_session");
 		expect(names).toContain("agent_peers");
 		expect(names).toContain("agent_message_send");
 		expect(names).toContain("agent_message_inbox");
@@ -107,7 +110,8 @@ describe("createMcpServer", () => {
 		expect(names).toContain("mcp_server_policy_set");
 		expect(names).toContain("secret_list");
 		expect(names).toContain("secret_exec");
-		expect(names.length).toBe(21);
+		expect(names).toContain("session_bypass");
+		expect(names.length).toBe(24);
 	});
 
 	describe("memory_search", () => {
