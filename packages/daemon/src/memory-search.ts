@@ -11,7 +11,6 @@ import { getDbAccessor } from "./db-accessor";
 import { logger } from "./logger";
 import type { EmbeddingConfig, MemorySearchConfig, ResolvedMemoryConfig } from "./memory-config";
 import { getGraphBoostIds, tokenizeGraphQuery } from "./pipeline/graph-search";
-import { FTS_STOP } from "./pipeline/stop-words";
 import {
 	resolveFocalEntities,
 	setTraversalStatus,
@@ -144,41 +143,24 @@ function buildFilterClause(params: RecallParams): FilterClause {
 /**
  * Sanitize a query string for FTS5 MATCH.
  *
- * FTS5 interprets colons as column prefixes (`col:term`), and other
- * characters as operators. Since our table only has a `content` column,
- * any colon-prefixed term that isn't `content:` will throw
- * "no such column". Strip colons and quote terms that contain special
- * characters to prevent syntax errors.
- *
- * Stop words are removed, then remaining terms are joined with OR for
- * recall-oriented matching. BM25 ranks documents with more matching
- * terms higher automatically.
+ * Strips FTS5 syntax characters and quotes each token as a literal.
+ * Implicit AND (space-separated) requires all terms to co-occur.
+ * BM25 IDF naturally downweights common terms — no manual stop-word
+ * removal needed.
  */
 function sanitizeFtsQuery(raw: string): string {
-	// Replace apostrophes with spaces before splitting so possessives
-	// like "Caroline's" become "Caroline s" → "Caroline" (the trailing
-	// "s" is filtered by minimum length). Without this, FTS5 tokenizes
-	// "Caroline's" as a phrase ["caroline","s"] requiring adjacency.
 	const tokens = raw
 		.replace(/'/g, " ")
 		.split(/\s+/)
 		.map((token) => {
-			// Strip characters that are FTS5 syntax: colons, quotes, parens, asterisks, carets
 			const cleaned = token.replace(/[":()^*]/g, "").trim();
-			if (!cleaned) return null;
-			// Filter stop words — prevents common terms from flooding OR results
-			if (FTS_STOP.has(cleaned.toLowerCase())) return null;
-			// Skip single-character tokens (not useful for search)
-			if (cleaned.length < 2) return null;
-			// Double-quote the term to treat it as a literal phrase token
+			if (!cleaned || cleaned.length < 2) return null;
 			return `"${cleaned}"`;
 		})
 		.filter(Boolean) as string[];
 
 	if (tokens.length === 0) return "";
-	if (tokens.length === 1) return tokens[0];
-	// OR for recall-oriented matching; BM25 handles ranking
-	return tokens.join(" OR ");
+	return tokens.join(" ");
 }
 
 // ---------------------------------------------------------------------------

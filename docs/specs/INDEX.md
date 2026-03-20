@@ -343,25 +343,25 @@ Phase ordering based on hard dependencies and integration contracts.
 ### Wave 6 (depends on Wave 5 — KA complete, PMS complete)
 
 - **Desire Paths Phase 1**: foundation completion
-  - DP-1: Significance gate (zero-cost continuity)
-  - DP-2: Edge confidence + reason on `entity_dependencies`
-  - DP-3: Bounded traversal parameters
-  - DP-4: MCP tool registration + blast radius endpoint
+  - DP-1: Significance gate (zero-cost continuity) — COMPLETE
+  - DP-2: Edge confidence + reason on `entity_dependencies` — COMPLETE
+  - DP-3: Bounded traversal parameters — COMPLETE
+  - DP-4: MCP tool registration + blast radius endpoint — COMPLETE
 - **Desire Paths Phase 2**: bootstrap topology
-  - DP-5: Leiden community detection
+  - DP-5: Leiden community detection — COMPLETE
 - **Desire Paths Phase 3**: graph-native retrieval
-  - DP-6: Entity-anchored search (replaces heuristic focal resolution)
-  - DP-7: Constructed memories (traversal paths, not memory rows)
+  - DP-6: Entity-anchored search + traversal-primary retrieval — COMPLETE
+  - DP-7: Constructed memories with path provenance — COMPLETE
 - **Desire Paths Phase 4**: path learning
-  - DP-8: Predictor bug fixes (prerequisite)
-  - DP-9: Path feedback propagation
-  - DP-10: Path scoring (predictor evolution)
-  - DP-11: Temporal reinforcement
+  - DP-8: Predictor bug fixes (cache invalidation) — COMPLETE
+  - DP-9: Path feedback propagation — NOT STARTED
+  - DP-10: Path scoring (predictor evolution) — NOT STARTED
+  - DP-11: Temporal reinforcement — NOT STARTED
 - **Desire Paths Phase 5**: emergence
-  - DP-12: Explorer bees
-  - DP-13: Cross-entity boundary traversal
-  - DP-14: Discovered principles
-  - DP-15: Entity health dashboard
+  - DP-12: Explorer bees — NOT STARTED
+  - DP-13: Cross-entity boundary traversal — NOT STARTED
+  - DP-14: Discovered principles — NOT STARTED
+  - DP-15: Entity health dashboard — NOT STARTED
 
 ---
 

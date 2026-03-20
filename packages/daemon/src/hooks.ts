@@ -1782,24 +1782,15 @@ function extractSubstantiveWords(text: string): string[] {
 }
 
 function buildRecallQueryShape(userPrompt: string, lastAssistantMessage?: string): RecallQueryShape {
-	const userTerms = extractSubstantiveWords(userPrompt);
-
-	// Pre-clean assistant message: strip metadata, mentions, signet blocks
-	const cleanedAssistant = lastAssistantMessage
-		? stripUntrustedMetadata(lastAssistantMessage)
-				.replace(/<@!?\d+>/g, "")
-				.replace(/\[signet:recall[^\]]*\]/g, "")
-				.replace(/<memory-feedback>[\s\S]*?<\/memory-feedback>/g, "")
-		: undefined;
-	const assistantTerms = cleanedAssistant ? extractSubstantiveWords(cleanedAssistant) : [];
-
-	// User terms get priority — assistant capped proportionally
-	const seen = new Set(userTerms);
-	const supplemental = assistantTerms.filter((t) => !seen.has(t));
-	const maxSupplemental = Math.max(2, userTerms.length);
-	const keywordTerms = [...userTerms, ...supplemental.slice(0, maxSupplemental)].slice(0, 12);
-
+	// Pass cleaned raw text for both keyword and vector queries.
+	// FTS5 with implicit AND + BM25 IDF handles term weighting naturally —
+	// manual stopword stripping destroyed phrase semantics and let
+	// individual OR'd terms match unrelated content.
 	const vectorQuery = stripUntrustedMetadata(userPrompt).trim().slice(0, 200);
+
+	// extractSubstantiveWords still used for display/telemetry only
+	const keywordTerms = extractSubstantiveWords(userPrompt);
+
 	return { keywordTerms, vectorQuery };
 }
 
@@ -1894,7 +1885,7 @@ export async function handleUserPromptSubmit(req: UserPromptSubmitRequest): Prom
 		const recall = await hybridRecall(
 			{
 				query: vectorQuery,
-				keywordQuery: keywordTerms.join(" OR "),
+				keywordQuery: vectorQuery,
 				limit: 10,
 				importance_min: 0.3,
 			},
@@ -1935,7 +1926,7 @@ export async function handleUserPromptSubmit(req: UserPromptSubmitRequest): Prom
 			return { inject: metadataHeader, memoryCount: 0 };
 		}
 
-		const queryTerms = keywordTerms.join(" ");
+		const queryTerms = vectorQuery.slice(0, 80);
 		const lines = selected.map((s) => {
 			const dateStr = formatMemoryDate(s.created_at);
 			return `- ${s.content} (${dateStr})`;
