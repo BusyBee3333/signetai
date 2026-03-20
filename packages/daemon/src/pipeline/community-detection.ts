@@ -94,30 +94,25 @@ export function buildEntityGraph(db: ReadDb, agentId: string): UndirectedGraph {
 // 2. Run community detection
 // ---------------------------------------------------------------------------
 
-export function detectCommunities(graph: UndirectedGraph, resolution = 1.0): Map<string, number> {
-	if (graph.order === 0) return new Map();
-
-	const mapping = louvain(graph, {
-		resolution,
-		getEdgeWeight: "weight",
-	});
-
-	return new Map(Object.entries(mapping));
-}
-
-// ---------------------------------------------------------------------------
-// 3. Compute modularity from the detailed output
-// ---------------------------------------------------------------------------
-
-export function computeModularity(graph: UndirectedGraph, resolution = 1.0): number {
-	if (graph.order === 0) return 0;
+/**
+ * Run Louvain once via `detailed()` and return both the community
+ * mapping and the modularity score for that exact partition.
+ */
+export function detectCommunities(
+	graph: UndirectedGraph,
+	resolution = 1.0,
+): { mapping: Map<string, number>; modularity: number } {
+	if (graph.order === 0) return { mapping: new Map(), modularity: 0 };
 
 	const result = louvain.detailed(graph, {
 		resolution,
 		getEdgeWeight: "weight",
 	});
 
-	return result.modularity;
+	return {
+		mapping: new Map(Object.entries(result.communities)),
+		modularity: result.modularity,
+	};
 }
 
 function qualityLabel(modularity: number): "fragmented" | "moderate" | "strong" {
@@ -252,9 +247,8 @@ export function clusterEntities(db: WriteDb, agentId: string, resolution = 1.0):
 		};
 	}
 
-	const communities = detectCommunities(graph, resolution);
-	const modularity = computeModularity(graph, resolution);
-	const members = persistCommunities(db, agentId, communities, graph);
+	const { mapping, modularity } = detectCommunities(graph, resolution);
+	const members = persistCommunities(db, agentId, mapping, graph);
 
 	return {
 		communities: members.length,
