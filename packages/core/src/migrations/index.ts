@@ -41,6 +41,7 @@ import { up as embeddingsVectorColumn } from "./032-embeddings-vector-column";
 import { up as scope } from "./033-scope";
 import { up as scopeAwareDedup } from "./034-scope-aware-dedup";
 import { up as entityFts } from "./035-entity-fts";
+import { up as ftsPorterStemming } from "./036-fts-porter-stemming";
 
 // -- Public interface consumed by Database.init() --
 
@@ -353,6 +354,11 @@ export const MIGRATIONS: readonly Migration[] = [
 		version: 35,
 		name: "entity-fts",
 		up: entityFts,
+	},
+	{
+		version: 36,
+		name: "fts-porter-stemming",
+		up: ftsPorterStemming,
 	},
 ];
 
