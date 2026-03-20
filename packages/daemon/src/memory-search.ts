@@ -6,7 +6,7 @@
  * daemon.ts is now a thin HTTP wrapper that delegates here.
  */
 
-import { vectorSearch } from "@signet/core";
+import { cosineSimilarity, vectorSearch } from "@signet/core";
 import { getDbAccessor } from "./db-accessor";
 import { logger } from "./logger";
 import type { EmbeddingConfig, ResolvedMemoryConfig } from "./memory-config";
@@ -271,6 +271,43 @@ export async function hybridRecall(
 		logger.warn("memory", "Vector search failed, using keyword only", {
 			error: String(e),
 		});
+	}
+
+	// --- Scoped vector search: direct cosine similarity for in-scope memories ---
+	// vec0 KNN can't pre-filter by scope, so for scoped queries most results
+	// are out-of-scope and discarded at hydration. Supplement with direct
+	// similarity computation on in-scope embeddings.
+	if (scoped && queryVecF32 && params.scope) {
+		try {
+			getDbAccessor().withReadDb((db) => {
+				const rows = db
+					.prepare(
+						`SELECT e.source_id, e.vector
+						 FROM embeddings e
+						 JOIN memories m ON e.source_id = m.id
+						 WHERE m.scope = ? AND m.is_deleted = 0
+						   AND e.vector IS NOT NULL
+						 LIMIT 500`,
+					)
+					.all(params.scope) as Array<{ source_id: string; vector: Buffer }>;
+				for (const row of rows) {
+					if (!row.vector) continue;
+					const emb = new Float32Array(
+						(row.vector as Buffer).buffer,
+						(row.vector as Buffer).byteOffset,
+						(row.vector as Buffer).byteLength / 4,
+					);
+					if (emb.length !== queryVecF32!.length) continue;
+					const sim = cosineSimilarity(queryVecF32!, emb);
+					const current = vectorMap.get(row.source_id) ?? 0;
+					if (sim > current) vectorMap.set(row.source_id, Math.max(0, sim));
+				}
+			});
+		} catch (e) {
+			logger.warn("memory", "Scoped vector search failed (non-fatal)", {
+				error: e instanceof Error ? e.message : String(e),
+			});
+		}
 	}
 
 	// --- Merge scores ---
