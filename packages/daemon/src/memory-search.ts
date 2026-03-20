@@ -176,8 +176,9 @@ function sanitizeFtsQuery(raw: string): string {
 	const tokens = raw
 		.split(/\s+/)
 		.map((token) => {
-			// Strip characters that are FTS5 syntax: colons, quotes, parens, asterisks, carets
-			const cleaned = token.replace(/[":()^*]/g, "").trim();
+			// Strip FTS5 syntax chars + apostrophes (prevents "Caroline's" from
+			// becoming a phrase search for adjacent tokens ["caroline","s"])
+			const cleaned = token.replace(/["':()^*]/g, "").trim();
 			if (!cleaned) return null;
 			// Filter stop words — prevents common terms from flooding OR results
 			if (FTS_STOP.has(cleaned.toLowerCase())) return null;
@@ -371,13 +372,31 @@ export async function hybridRecall(
 			const queryTokens = tokenizeGraphQuery(query);
 			if (queryTokens.length > 0) {
 				const agentId = params.agentId ?? "default";
-				const focal = getDbAccessor().withReadDb((db) =>
+				let focalIds = getDbAccessor().withReadDb((db) =>
 					resolveFocalEntities(db, agentId, { queryTokens }),
-				);
+				).entityIds;
 
-				if (focal.entityIds.length > 0) {
+				// Scope-filter traversal entities to focus budget on
+				// relevant entities instead of exploring unrelated ones.
+				if (focalIds.length > 0 && params.scope !== undefined) {
+					const ph = focalIds.map(() => "?").join(", ");
+					const sc = params.scope === null ? "m.scope IS NULL" : "m.scope = ?";
+					const sa: unknown[] = params.scope === null ? [] : [params.scope];
+					focalIds = getDbAccessor().withReadDb((db) =>
+						(db.prepare(
+							`SELECT DISTINCT mem.entity_id
+							 FROM memory_entity_mentions mem
+							 JOIN memories m ON m.id = mem.memory_id
+							 WHERE mem.entity_id IN (${ph})
+							   AND ${sc} AND m.is_deleted = 0`,
+						).all(...focalIds, ...sa) as Array<{ entity_id: string }>)
+						.map((r) => r.entity_id),
+					);
+				}
+
+				if (focalIds.length > 0) {
 					const traversal = getDbAccessor().withReadDb((db) =>
-						traverseKnowledgeGraph(focal.entityIds, db, agentId, {
+						traverseKnowledgeGraph(focalIds, db, agentId, {
 							maxAspectsPerEntity: traversalCfg.maxAspectsPerEntity,
 							maxAttributesPerAspect: traversalCfg.maxAttributesPerAspect,
 							maxDependencyHops: traversalCfg.maxDependencyHops,
