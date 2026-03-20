@@ -16,6 +16,7 @@ import { escalate } from "./extraction-escalation";
 import { detectSemanticContradiction } from "./contradiction";
 import { runShadowDecisions } from "./decision";
 import { logger } from "../logger";
+import { assessSignificance, type SignificanceConfig } from "./significance-gate";
 import { txIngestEnvelope, txModifyMemory, txForgetMemory } from "../transactions";
 import { archiveToCold } from "./retention-worker";
 import { normalizeAndHashContent } from "../content-normalization";
@@ -939,6 +940,50 @@ export function startWorker(
 				);
 			});
 			return;
+		}
+
+		// --- Significance gate: skip extraction for trivial sessions ---
+		const sigCfg: SignificanceConfig =
+			pipelineCfg.significance ?? {
+				enabled: true,
+				minTurns: 5,
+				minEntityOverlap: 1,
+				noveltyThreshold: 0.15,
+			};
+
+		if (sigCfg.enabled) {
+			const assessment = accessor.withReadDb((db) =>
+				assessSignificance(row.content, db, "default", sigCfg),
+			);
+
+			if (!assessment.significant) {
+				logger.info(
+					"pipeline",
+					"Session below significance threshold — skipping extraction",
+					{
+						jobId: job.id,
+						memoryId: job.memory_id,
+						scores: assessment.scores,
+						reason: assessment.reason,
+					},
+				);
+
+				// Mark the job complete with gate result — raw transcript
+				// is already persisted, only LLM extraction is skipped.
+				accessor.withWriteTx((db) => {
+					completeJob(
+						db,
+						job.id,
+						JSON.stringify({
+							skipped: "significance_gate",
+							scores: assessment.scores,
+							reason: assessment.reason,
+						}),
+					);
+					updateExtractionStatus(db, job.memory_id, "completed");
+				});
+				return;
+			}
 		}
 
 		// Wrap provider to capture llm.generate telemetry on every call

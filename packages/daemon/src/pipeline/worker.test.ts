@@ -255,6 +255,12 @@ const PIPELINE_CFG: PipelineV2Config = {
 		dependencyBatchSize: 5,
 		pollIntervalMs: 10000,
 	},
+	significance: {
+		enabled: false,
+		minTurns: 5,
+		minEntityOverlap: 1,
+		noveltyThreshold: 0.15,
+	},
 };
 
 const PHASE_C_CFG: PipelineV2Config = {
