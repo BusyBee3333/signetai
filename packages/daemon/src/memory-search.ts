@@ -754,7 +754,7 @@ export async function hybridRecall(
 	}
 
 	// --- Constructed memories: synthesize readable text from graph structure ---
-	if (entityContext.length > 0) {
+	if (false && entityContext.length > 0) {
 		for (const entity of entityContext) {
 			const sections: string[] = [];
 			for (const aspect of entity.aspects) {
