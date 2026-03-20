@@ -729,28 +729,13 @@ export async function hybridRecall(
 							name: ent.name,
 							type: ent.entity_type,
 							aspects: aspects.map((asp) => {
-								// Scope-filter attributes when a scope is
-							// specified, ensuring constructed memories
-							// only contain facts from in-scope memories.
-							const attrSql = params.scope !== undefined
-								? `SELECT ea.content, ea.status, ea.importance
-								   FROM entity_attributes ea
-								   JOIN memories m ON ea.memory_id = m.id
-								   WHERE ea.aspect_id = ? AND ea.agent_id = ?
-								     AND ea.status = 'active'
-								     AND ${params.scope === null ? "m.scope IS NULL" : "m.scope = ?"}
-								     AND m.is_deleted = 0
-								   ORDER BY ea.importance DESC LIMIT 5`
-								: `SELECT content, status, importance FROM entity_attributes
-								   WHERE aspect_id = ? AND agent_id = ? AND status = 'active'
-								   ORDER BY importance DESC LIMIT 5`;
-							const attrArgs: unknown[] = [asp.id, agentId];
-							if (params.scope !== undefined && params.scope !== null) {
-								attrArgs.push(params.scope);
-							}
-							const attrs = db
-								.prepare(attrSql)
-								.all(...attrArgs) as Array<{
+								const attrs = db
+									.prepare(
+										`SELECT content, status, importance FROM entity_attributes
+										 WHERE aspect_id = ? AND agent_id = ? AND status = 'active'
+										 ORDER BY importance DESC LIMIT 5`,
+									)
+									.all(asp.id, agentId) as Array<{
 									content: string;
 									status: string;
 									importance: number;
