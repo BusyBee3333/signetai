@@ -173,7 +173,12 @@ const FTS_STOP = new Set([
  * terms higher automatically.
  */
 function sanitizeFtsQuery(raw: string): string {
+	// Replace apostrophes with spaces before splitting so possessives
+	// like "Caroline's" become "Caroline s" → "Caroline" (the trailing
+	// "s" is filtered by minimum length). Without this, FTS5 tokenizes
+	// "Caroline's" as a phrase ["caroline","s"] requiring adjacency.
 	const tokens = raw
+		.replace(/'/g, " ")
 		.split(/\s+/)
 		.map((token) => {
 			// Strip characters that are FTS5 syntax: colons, quotes, parens, asterisks, carets
