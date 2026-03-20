@@ -678,21 +678,13 @@ export async function hybridRecall(
 					const focal = resolveFocalEntities(db, agentId, { queryTokens });
 					if (focal.entityIds.length === 0) return [];
 
-					// Exclude pinned entities — they always resolve (e.g. the
-					// user's own entity) and add noise to constructed memories.
-					// Filter to person/concept/extracted types only.
-					const pinned = new Set(focal.pinnedEntityIds);
-					const ids = focal.entityIds.filter((id) => !pinned.has(id));
-					if (ids.length === 0) return [];
-
-					const placeholders = ids.map(() => "?").join(", ");
+					const placeholders = focal.entityIds.map(() => "?").join(", ");
 					const entities = db
 						.prepare(
 							`SELECT id, name, entity_type FROM entities
-							 WHERE id IN (${placeholders})
-							   AND entity_type IN ('person', 'concept', 'extracted')`,
+							 WHERE id IN (${placeholders})`,
 						)
-						.all(...ids) as Array<{
+						.all(...focal.entityIds) as Array<{
 						id: string;
 						name: string;
 						entity_type: string;
@@ -736,11 +728,8 @@ export async function hybridRecall(
 	}
 
 	// --- Constructed memories: synthesize readable text from graph structure ---
-	// Cap at 3 to avoid flooding context with graph data over flat results
 	if (entityContext.length > 0) {
-		let constructed = 0;
 		for (const entity of entityContext) {
-			if (constructed >= 3) break;
 			const sections: string[] = [];
 			for (const aspect of entity.aspects) {
 				const attrs = aspect.attributes.map((a) => a.content).join(". ");
@@ -769,7 +758,6 @@ export async function hybridRecall(
 				created_at: new Date().toISOString(),
 				supplementary: true,
 			});
-			constructed++;
 		}
 	}
 

@@ -1167,16 +1167,16 @@ export async function deduplicateMemories(
 	const hashClusters = accessor.withReadDb((db) => {
 		return db
 			.prepare(
-				`SELECT content_hash, COUNT(*) AS cnt
+				`SELECT content_hash, COALESCE(scope, '__NULL__') AS scope_key, COUNT(*) AS cnt
 				 FROM memories
 				 WHERE is_deleted = 0 AND pinned = 0 AND manual_override = 0
 				   AND content_hash IS NOT NULL
-				 GROUP BY content_hash
+				 GROUP BY content_hash, scope_key
 				 HAVING COUNT(*) > 1
 				 ORDER BY cnt DESC
 				 LIMIT ?`,
 			)
-			.all(batchSize) as Array<{ content_hash: string; cnt: number }>;
+			.all(batchSize) as Array<{ content_hash: string; scope_key: string; cnt: number }>;
 	});
 
 	if (dryRun) {
@@ -1203,9 +1203,15 @@ export async function deduplicateMemories(
 	let totalRemoved = 0;
 	let totalClusters = 0;
 
-	// Process exact hash clusters
+	// Process exact hash clusters (scope-aware: only dedup within same scope)
 	for (const cluster of hashClusters) {
 		const removed = accessor.withWriteTx((db) => {
+			const scopeFilter = cluster.scope_key === "__NULL__"
+				? "AND scope IS NULL"
+				: "AND scope = ?";
+			const scopeArgs = cluster.scope_key === "__NULL__"
+				? []
+				: [cluster.scope_key];
 			const candidates = db
 				.prepare(
 					`SELECT id, content, content_hash, tags, importance,
@@ -1213,9 +1219,10 @@ export async function deduplicateMemories(
 					 FROM memories
 					 WHERE content_hash = ? AND is_deleted = 0
 					   AND pinned = 0 AND manual_override = 0
+					   ${scopeFilter}
 					 ORDER BY importance DESC`,
 				)
-				.all(cluster.content_hash) as DedupCandidate[];
+				.all(cluster.content_hash, ...scopeArgs) as DedupCandidate[];
 
 			const result = processCluster(db, candidates, ctx);
 			return result?.removed ?? 0;
