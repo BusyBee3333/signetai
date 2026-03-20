@@ -16,6 +16,7 @@ import {
 	setTraversalStatus,
 	traverseKnowledgeGraph,
 } from "./pipeline/graph-traversal";
+import { constructContextBlocks } from "./pipeline/context-construction";
 import { type RerankCandidate, noopReranker, rerank } from "./pipeline/reranker";
 import { createEmbeddingReranker } from "./pipeline/reranker-embedding";
 
@@ -723,24 +724,18 @@ export async function hybridRecall(
 		}
 	}
 
-	// --- Entity context: structured KG data for entities found in the query ---
-	let entityContext: Array<{
-		name: string;
-		type: string;
-		aspects: Array<{
-			name: string;
-			attributes: Array<{ content: string; status: string; importance: number }>;
-		}>;
-	}> = [];
+	// --- Entity context + constructed memories (DP-7) ---
+	let entityContext: RecallResponse["entities"];
+	let focalEids: string[] = [];
 
 	if (cfg.pipelineV2.graph.enabled && cfg.pipelineV2.traversal?.enabled) {
 		try {
 			const queryTokens = tokenizeGraphQuery(query);
 			if (queryTokens.length > 0) {
 				const agentId = params.agentId ?? "default";
-				entityContext = getDbAccessor().withReadDb((db) => {
+				const ctx = getDbAccessor().withReadDb((db) => {
 					const focal = resolveFocalEntities(db, agentId, { queryTokens });
-					if (focal.entityIds.length === 0) return [];
+					if (focal.entityIds.length === 0) return null;
 
 					// Scope-filter: only include entities mentioned in
 					// in-scope memories so unscoped entities (codebase
@@ -760,7 +755,7 @@ export async function hybridRecall(
 							)
 							.all(...eids, ...sa) as Array<{ entity_id: string }>;
 						eids = sr.map((r) => r.entity_id);
-						if (eids.length === 0) return [];
+						if (eids.length === 0) return null;
 					}
 
 					const placeholders = eids.map(() => "?").join(", ");
@@ -775,7 +770,7 @@ export async function hybridRecall(
 						entity_type: string;
 					}>;
 
-					return entities.map((ent) => {
+					const structured = entities.map((ent) => {
 						const aspects = db
 							.prepare(
 								`SELECT id, name FROM entity_aspects
@@ -803,7 +798,14 @@ export async function hybridRecall(
 							}).filter((a) => a.attributes.length > 0),
 						};
 					}).filter((e) => e.aspects.length > 0);
+
+					return { eids, structured };
 				});
+
+				if (ctx) {
+					entityContext = ctx.structured;
+					focalEids = ctx.eids;
+				}
 			}
 		} catch (e) {
 			logger.warn("memory", "Entity context fetch failed (non-fatal)", {
@@ -812,36 +814,39 @@ export async function hybridRecall(
 		}
 	}
 
-	// --- Constructed memories: synthesize readable text from graph structure ---
-	if (entityContext.length > 0) {
-		for (const entity of entityContext) {
-			const sections: string[] = [];
-			for (const aspect of entity.aspects) {
-				const attrs = aspect.attributes.map((a) => a.content).join(". ");
-				if (attrs) sections.push(`${aspect.name}: ${attrs}`);
+	// --- Constructed memories: synthesize from graph paths (DP-7) ---
+	if (focalEids.length > 0) {
+		try {
+			const agentId = params.agentId ?? "default";
+			const blocks = getDbAccessor().withReadDb((db) =>
+				constructContextBlocks(db, agentId, focalEids, limit),
+			);
+			const now = new Date().toISOString();
+			for (const block of blocks) {
+				const syntheticId = `constructed:${block.provenance.entityName}`;
+				if (existingIds.has(syntheticId)) continue;
+				existingIds.add(syntheticId);
+
+				results.push({
+					id: syntheticId,
+					content: block.content,
+					content_length: block.content.length,
+					truncated: false,
+					score: Math.round(block.score * 100) / 100,
+					source: "constructed",
+					type: "knowledge",
+					tags: null,
+					pinned: false,
+					importance: 8,
+					who: "",
+					project: null,
+					created_at: now,
+					supplementary: true,
+				});
 			}
-			if (sections.length === 0) continue;
-
-			const text = `About ${entity.name} (${entity.type}):\n${sections.join("\n")}`;
-			const syntheticId = `constructed:${entity.name}`;
-			if (existingIds.has(syntheticId)) continue;
-			existingIds.add(syntheticId);
-
-			results.push({
-				id: syntheticId,
-				content: text,
-				content_length: text.length,
-				truncated: false,
-				score: 0.85,
-				source: "constructed",
-				type: "knowledge",
-				tags: null,
-				pinned: false,
-				importance: 8,
-				who: "",
-				project: null,
-				created_at: new Date().toISOString(),
-				supplementary: true,
+		} catch (e) {
+			logger.warn("memory", "Constructed context failed (non-fatal)", {
+				error: e instanceof Error ? e.message : String(e),
 			});
 		}
 	}
@@ -850,6 +855,6 @@ export async function hybridRecall(
 		results,
 		query,
 		method: vectorMap.size > 0 ? "hybrid" : "keyword",
-		entities: entityContext.length > 0 ? entityContext : undefined,
+		entities: entityContext && entityContext.length > 0 ? entityContext : undefined,
 	};
 }

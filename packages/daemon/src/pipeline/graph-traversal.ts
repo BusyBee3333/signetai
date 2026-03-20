@@ -17,6 +17,8 @@ export interface TraversalResult {
 	readonly timedOut: boolean;
 	/** Aspect IDs walked during traversal */
 	readonly activeAspectIds: ReadonlyArray<string>;
+	/** Entity IDs that seeded the walk (needed by context-construction, DP-7) */
+	readonly focalEntityIds: ReadonlyArray<string>;
 }
 
 export interface TraversalConfig {
@@ -26,16 +28,16 @@ export interface TraversalConfig {
 	readonly maxAspectsPerEntity: number;
 	/** Max attributes per aspect (default 20) */
 	readonly maxAttributesPerAspect: number;
-	/** Max dependency expansions (default 10) */
+	/** Max one-hop dependency expansions (default 10) */
 	readonly maxDependencyHops: number;
 	/** Minimum dependency strength to traverse (default 0.3) */
 	readonly minDependencyStrength: number;
-	/** Max fan-out per focal entity (default 4) */
-	readonly maxBranching?: number;
+	/** Max outgoing edges per entity node (default 4) */
+	readonly maxBranching: number;
 	/** Total memory ID budget — early exit when reached (default 50) */
-	readonly maxTraversalPaths?: number;
-	/** Minimum confidence to traverse an edge (default 0.5) */
-	readonly minConfidence?: number;
+	readonly maxTraversalPaths: number;
+	/** Minimum edge confidence to traverse (default 0.5) */
+	readonly minConfidence: number;
 	/** Timeout in ms (default 500) */
 	readonly timeoutMs: number;
 	/** Filter aspects by canonical_name substring (on-demand expansion) */
@@ -308,6 +310,7 @@ export function traverseKnowledgeGraph(
 		entityCount: 0,
 		timedOut: false,
 		activeAspectIds: [],
+		focalEntityIds: [],
 	};
 
 	try {
@@ -337,8 +340,11 @@ export function traverseKnowledgeGraph(
 			return false;
 		};
 
+		const budget = config.maxTraversalPaths;
+
 		const collectForEntity = (entityId: string): void => {
 			if (timedOut || visitedEntities.has(entityId)) return;
+			if (memoryIds.size >= budget) return;
 			visitedEntities.add(entityId);
 
 			if (checkDeadline()) return;
@@ -394,7 +400,7 @@ export function traverseKnowledgeGraph(
 			const aspectRows = db.prepare(aspectQuery).all(...aspectArgs) as Array<{ id: string }>;
 
 			for (const aspect of aspectRows) {
-				if (checkDeadline()) break;
+				if (checkDeadline() || memoryIds.size >= budget) break;
 				activeAspectIds.add(aspect.id);
 				let attributeRows: Array<{ memory_id: string | null; importance: number }>;
 
@@ -440,13 +446,9 @@ export function traverseKnowledgeGraph(
 		};
 
 		for (const entityId of focalIds) {
-			if (checkDeadline()) break;
+			if (checkDeadline() || memoryIds.size >= budget) break;
 			collectForEntity(entityId);
 		}
-
-		const budget = config.maxTraversalPaths ?? 50;
-		const branching = config.maxBranching ?? 4;
-		const minConf = config.minConfidence ?? 0.5;
 
 		if (!timedOut && memoryIds.size < budget) {
 			const dependencyPlaceholders = focalIds.map(() => "?").join(", ");
@@ -464,11 +466,9 @@ export function traverseKnowledgeGraph(
 					agentId,
 					...focalIds,
 					config.minDependencyStrength,
-					minConf,
-					branching * focalIds.length,
-				) as Array<{
-				target_entity_id: string;
-			}>;
+					config.minConfidence,
+					config.maxBranching * focalIds.length,
+				) as Array<{ target_entity_id: string }>;
 
 			for (const row of dependencyRows) {
 				if (checkDeadline() || memoryIds.size >= budget) break;
@@ -485,6 +485,7 @@ export function traverseKnowledgeGraph(
 			entityCount: visitedEntities.size,
 			timedOut,
 			activeAspectIds: [...activeAspectIds],
+			focalEntityIds: focalIds,
 		};
 	} catch {
 		return empty;
