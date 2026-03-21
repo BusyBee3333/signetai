@@ -391,9 +391,11 @@ export async function hybridRecall(
 			}
 		}
 
-		// Channel B merge: traversal memories first, flat fills remaining slots
+		// Channel B merge: traversal memories first, flat fills remaining slots.
+		// Cap gap-fill so OR fan-out doesn't flood the merge and dilute traversal.
 		const traversalIds = new Set(traversalScored.map((s) => s.id));
-		const gapFill = flatScored.filter((s) => !traversalIds.has(s.id));
+		const gapBudget = Math.max(0, limit - traversalScored.length);
+		const gapFill = flatScored.filter((s) => !traversalIds.has(s.id)).slice(0, gapBudget);
 		scored = [...traversalScored, ...gapFill];
 		scored.sort((a, b) => b.score - a.score);
 
