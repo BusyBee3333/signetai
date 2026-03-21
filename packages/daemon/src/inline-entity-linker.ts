@@ -99,7 +99,6 @@ export function extractCandidateNames(text: string): string[] {
 
 			const isCapitalized = /^[A-Z][a-z]/.test(clean);
 			const isAllCaps = /^[A-Z]{2,}$/.test(clean) && clean.length <= 6;
-			const isSentenceStart = i === 0;
 
 			if ((isCapitalized || isAllCaps) && !SKIP_WORDS.has(clean.toLowerCase())) {
 				// Sentence-initial capitals that pass SKIP_WORDS are proper
@@ -193,10 +192,10 @@ function resolveEntity(
 	const existing = db
 		.prepare(
 			`SELECT id FROM entities
-			 WHERE (canonical_name = ? AND agent_id = ?) OR name = ?
+			 WHERE (canonical_name = ? OR name = ?) AND agent_id = ?
 			 LIMIT 1`,
 		)
-		.get(canonical, agentId, name) as { id: string } | undefined;
+		.get(canonical, name, agentId) as { id: string } | undefined;
 
 	if (existing) {
 		db.prepare(
@@ -217,8 +216,8 @@ function resolveEntity(
 		const msg = e instanceof Error ? e.message : String(e);
 		if (!msg.includes("UNIQUE constraint")) throw e;
 		const fallback = db
-			.prepare("SELECT id FROM entities WHERE name = ? LIMIT 1")
-			.get(name) as { id: string } | undefined;
+			.prepare("SELECT id FROM entities WHERE name = ? AND agent_id = ? LIMIT 1")
+			.get(name, agentId) as { id: string } | undefined;
 		if (!fallback) return "";
 		db.prepare(
 			`UPDATE entities SET mentions = mentions + 1, updated_at = ? WHERE id = ?`,
@@ -275,7 +274,6 @@ function resolveAspect(
 
 export interface LinkResult {
 	readonly linked: number;
-	readonly created: number;
 	readonly entityIds: string[];
 	readonly aspects: number;
 	readonly attributes: number;
@@ -300,11 +298,10 @@ export function linkMemoryToEntities(
 	agentId: string,
 ): LinkResult {
 	const names = extractCandidateNames(content);
-	if (names.length === 0) return { linked: 0, created: 0, entityIds: [], aspects: 0, attributes: 0 };
+	if (names.length === 0) return { linked: 0, entityIds: [], aspects: 0, attributes: 0 };
 
 	const now = new Date().toISOString();
 	let linked = 0;
-	let created = 0;
 	let aspectCount = 0;
 	let attributeCount = 0;
 	const entityIds: string[] = [];
@@ -318,16 +315,12 @@ export function linkMemoryToEntities(
 		entityIds.push(entityId);
 
 		// Create memory-entity mention link
-		try {
-			db.prepare(
-				`INSERT OR IGNORE INTO memory_entity_mentions
-				 (memory_id, entity_id, mention_text, confidence, created_at)
-				 VALUES (?, ?, ?, 0.8, ?)`,
-			).run(memoryId, entityId, name, now);
-			linked++;
-		} catch {
-			// Link already exists
-		}
+		const ins = db.prepare(
+			`INSERT OR IGNORE INTO memory_entity_mentions
+			 (memory_id, entity_id, mention_text, confidence, created_at)
+			 VALUES (?, ?, ?, 0.8, ?)`,
+		).run(memoryId, entityId, name, now);
+		if (ins.changes > 0) linked++;
 	}
 
 	// Step 2: Extract clauses and create aspects + attributes
@@ -390,5 +383,5 @@ export function linkMemoryToEntities(
 		}
 	}
 
-	return { linked, created: names.length - linked, entityIds, aspects: aspectCount, attributes: attributeCount };
+	return { linked, entityIds, aspects: aspectCount, attributes: attributeCount };
 }

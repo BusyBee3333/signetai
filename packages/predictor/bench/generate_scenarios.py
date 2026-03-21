@@ -317,7 +317,7 @@ def extract_json(text: str) -> list | None:
         if isinstance(parsed, dict):
             return [parsed]
     except json.JSONDecodeError:
-        pass
+        pass  # Fall through to heuristic extraction below
 
     # Try to find array boundaries
     start = text.find("[")

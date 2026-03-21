@@ -145,10 +145,9 @@ function buildFilterClause(params: RecallParams): FilterClause {
 /**
  * Sanitize a query string for FTS5 MATCH.
  *
- * Strips FTS5 syntax characters and quotes each token as a literal.
- * Implicit AND (space-separated) requires all terms to co-occur.
- * BM25 IDF naturally downweights common terms — no manual stop-word
- * removal needed.
+ * Strips FTS5 syntax characters, removes stop words, and quotes each
+ * token as a literal. Short queries (<=3 tokens) use implicit AND for
+ * precision; longer queries use OR so BM25 IDF ranks by term importance.
  */
 function sanitizeFtsQuery(raw: string): string {
 	const tokens = raw

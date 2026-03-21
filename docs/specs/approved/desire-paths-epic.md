@@ -43,6 +43,35 @@ running. They are not stories — they are the floor this epic stands on.
 | Behavioral Feedback Loop | COMPLETE | `aspect-feedback.ts` — FTS overlap feedback, aspect weight decay, telemetry |
 | Entity Pinning | COMPLETE | Migration 022, pin/unpin, always-focal during traversal |
 | Relations Confidence | COMPLETE | Migration 005, `relations.confidence` column |
+| Inline Entity Linking | COMPLETE | `inline-entity-linker.ts` — write-time entity/aspect/attribute derivation (see DP-6a) |
+| Traversal-Primary Flow | COMPLETE | `memory-search.ts` — graph walk as primary channel, FTS as gap-fill |
+| Mention-Based Traversal Fallback | COMPLETE | `graph-traversal.ts` — `memory_entity_mentions` fallback when `entity_attributes` empty |
+| Community Detection (Leiden) | COMPLETE | `community-detection.ts` — Leiden clustering, `entity_communities` table |
+
+---
+
+## Benchmark Findings (E15–E23, March 2026)
+
+*20 experiments on LoCoMo 50-question benchmark. Key learnings that
+shaped the implementation decisions below.*
+
+**Fair baseline (E23):** Signet 62% vs RAG 68% on identical 50 questions.
+Prior invalid comparison (different question sets) showed 54% vs 66%.
+
+| Finding | Evidence | Implication |
+|---------|----------|-------------|
+| Traversal was a no-op | E15-E20: 0 traversal candidates | Without write-time structure, `entity_attributes` pointed at wrong scopes |
+| Write-time structure is required | DP-6a fix → entity/aspect/attribute at remember-time | Pipeline extraction is too late — remember endpoint must derive KA structure |
+| Vector search is irrelevant for scoped queries | E20b = E15 (identical 54%) | sqlite-vec can't pre-filter scope; already skipped |
+| Constructed memories are critical | E16: removing them → 42% | Never remove, only improve |
+| OR-everywhere hurts precision | E21: gained single-hop, lost multi-hop/adversarial (net -2%) | AND for short queries, OR for long |
+| Prompt tuning hits ceiling fast | E9, E13, E19 all regressed | Retrieval quality is the bottleneck |
+| 8/12 Signet failures shared with RAG | E15 failure analysis | Extraction/answer ceiling, not retrieval-specific |
+| Data variance confounds results | E20 fresh data: 34%; E20b same data: 54% | Always reuse `dataSourceRunId` |
+
+**Known issue:** Benchmark data mixes with real memories. Scope filtering
+at hydration prevents cross-contamination in results, but the entity
+graph accumulates benchmark entities alongside real ones.
 
 ---
 
@@ -205,13 +234,14 @@ accumulates.*
 
 Depends on: Phase 1 (edges have confidence, traversal is bounded).
 
-### DP-5: Leiden Community Detection
+### DP-5: Leiden Community Detection — PARTIALLY COMPLETE
 
 **Goal:** Cluster the entity graph into functional neighborhoods.
 Give the scorer routing landmarks.
 
-**What exists:** No clustering. All entities are structurally
-equidistant.
+**What exists:** `community-detection.ts` implements Leiden clustering
+via graphology. `entity_communities` table exists. `/api/repair/cluster-entities`
+endpoint works. Constellation view integration in progress.
 
 **What to build:**
 
@@ -248,34 +278,101 @@ goes through it.*
 Depends on: Phase 2 (topology exists to traverse). DP-7 depends on
 DP-6.
 
-### DP-6: Entity-Anchored Search
+### DP-6: Entity-Anchored Search — PARTIALLY COMPLETE
 
-**Goal:** Hybrid search identifies *entities*, not memories.
+**Goal:** Hybrid search identifies *entities*, not memories. Graph walk
+is the primary retrieval path.
 
-**What exists:** `resolveFocalEntities` in `graph-traversal.ts` uses
-project path matching, query token matching via LIKE queries, checkpoint
-entities, and pinned entities. This is heuristic-based — it matches
-path components and normalized tokens against entity names. It does not
-use FTS5 or embeddings to find entities, and cannot rank entity
-relevance by structural signals.
+**Status:** Core flow is implemented and benchmarked. Entity-anchored
+search via FTS5 against entities is not yet built (the resolution still
+uses heuristic token matching). But the architectural inversion —
+traversal-primary, flat-gap-fill — is live and producing results.
 
-**What to build:**
+**What was built (March 2026):**
 
-1. Add entity-resolution via FTS5 + embedding search against `entities`
-   (in addition to `memories`).
-2. Score entity matches by: name match strength, mention count,
-   community membership (DP-5), pinned status, structural density.
-3. Return ranked focal entities. The current heuristic resolution
-   becomes fallback for when entity-anchored search produces no results.
-4. Flat memory search still runs as secondary channel — merged with
-   traversal results during reranking. But graph walk is now the
-   primary retrieval path.
+1. **Traversal-primary flow** in `memory-search.ts`: graph traversal
+   runs as Channel A (primary), FTS5 keyword search runs as Channel B
+   (gap-fill). Traversal memories scored by structural importance from
+   `entity_attributes`. Flat search only contributes memories the
+   graph didn't find. Graceful degradation: when entity resolution
+   finds no focal entities, Channel B gets full result limit.
+2. **FTS5 stop-word filtering** in `graph-search.ts`: shared stop-word
+   list prevents common tokens from matching garbage entities.
+3. **Mention-based traversal fallback** in `graph-traversal.ts`: when
+   `entity_attributes` yields no memories for an entity (e.g., before
+   pipeline extraction runs), falls back to `memory_entity_mentions`
+   joined with `memories` for scope filtering.
+4. **Scope-filtered attribute collection**: traversal joins with
+   `memories` table to pre-filter out-of-scope results during
+   collection, not after hydration.
+
+**What remains:**
+
+1. Entity-resolution via FTS5 + embedding search against `entities`
+   (not just LIKE-based token matching).
+2. Entity ranking by structural signals: mention count, community
+   membership (DP-5), pinned status, structural density.
+3. Current heuristic resolution becomes fallback for when entity-
+   anchored search produces no results.
 
 **Files:**
-- `packages/daemon/src/pipeline/graph-traversal.ts` — new resolution path
-- `packages/core/src/search.ts` — entity search additions
+- `packages/daemon/src/memory-search.ts` — traversal-primary flow (DONE)
+- `packages/daemon/src/pipeline/graph-search.ts` — stop-word filtering (DONE)
+- `packages/daemon/src/pipeline/graph-traversal.ts` — mention fallback, scope filter (DONE)
+- `packages/daemon/src/pipeline/graph-traversal.ts` — FTS5 entity resolution (TODO)
+- `packages/core/src/search.ts` — entity search additions (TODO)
 
-**Estimate:** 2-3 days.
+---
+
+### DP-6a: Inline Entity Linking (Write-Time Structure) — COMPLETE
+
+**Goal:** The `/api/memory/remember` endpoint derives full entity →
+aspect → attribute structure from memory content at write time, without
+LLM calls. This ensures traversal can find the memory immediately.
+
+**Motivation:** Benchmark experiments (E15-E22) revealed that traversal
+produced zero candidates because entity_attributes only existed after
+async pipeline extraction — which runs later and may never complete for
+scoped/benchmark memories. The remember endpoint must be self-sufficient.
+
+**What was built:**
+
+1. `inline-entity-linker.ts` — new module with:
+   - **Aspect inference from verb patterns**: 12 regex patterns mapping
+     sentence verbs to aspect categories (preferences, events,
+     properties, activities, perspectives, background, relationships,
+     decision patterns).
+   - **Name extraction**: proper noun detection from capitalized words,
+     multi-word name grouping, SKIP_WORDS filter for false positives.
+     Includes sentence-initial proper nouns (critical for "Caroline
+     attended..." patterns).
+   - **Clause extraction**: entity-predicate pairs from sentence
+     structure. "Caroline attended an LGBTQ support group" → entity:
+     Caroline, aspect: events, predicate: "attended an LGBTQ support
+     group."
+   - **Entity/aspect/attribute resolution**: find-or-create with
+     UNIQUE constraint handling, canonical name normalization, duplicate
+     attribute detection via `normalized_content`.
+   - **Co-occurrence dependencies**: entities mentioned in the same
+     memory get `related_to` dependency edges.
+2. `daemon.ts` — remember endpoint calls `linkMemoryToEntities()` inside
+   the write transaction, immediately after memory insert.
+3. `LinkResult` interface returns counts: `linked`, `created`,
+   `entityIds`, `aspects`, `attributes`.
+
+**Key design decisions:**
+- No LLM — sentence grammar is sufficient for aspect inference at the
+  "this is probably an attribute that needs sorting into an aspect of
+  an entity" level.
+- Runs synchronously inside the write transaction. KA traversal finds
+  the memory immediately.
+- Pipeline extraction still runs later for deeper analysis (supersession,
+  dependency synthesis, confidence calibration). This is complementary,
+  not redundant.
+
+**Files:**
+- `packages/daemon/src/inline-entity-linker.ts` — new module (COMPLETE)
+- `packages/daemon/src/daemon.ts` — integration at remember endpoint (COMPLETE)
 
 ---
 
@@ -571,11 +668,12 @@ flowchart TD
   end
 
   subgraph P2["Phase 2: Bootstrap Topology"]
-    DP5[DP-5: Leiden Clustering]
+    DP5[DP-5: Leiden Clustering]:::partial
   end
 
   subgraph P3["Phase 3: Graph-Native Retrieval"]
-    DP6[DP-6: Entity-Anchored Search]
+    DP6a[DP-6a: Inline Entity Linking]:::done
+    DP6[DP-6: Entity-Anchored Search]:::partial
     DP7[DP-7: Constructed Memories]
   end
 
@@ -597,6 +695,7 @@ flowchart TD
   DP2 --> DP4
   P1 --> P2
   DP5 --> DP6
+  DP6a --> DP6
   DP6 --> DP7
   DP8 --> DP10
   DP7 --> DP9
@@ -606,20 +705,23 @@ flowchart TD
   P4 --> P5
   DP13 --> DP14
   DP12 --> DP14
+
+  classDef done fill:#2d5a2d,stroke:#4a8c4a
+  classDef partial fill:#5a4a2d,stroke:#8c7a4a
 ```
 
 ## Effort Summary
 
-| Phase | Stories | Estimate |
-|-------|---------|----------|
-| 1: Complete the Foundation | DP-1, DP-2, DP-3, DP-4 | 4-7 days |
-| 2: Bootstrap Topology | DP-5 | 2-3 days |
-| 3: Graph-Native Retrieval | DP-6, DP-7 | 4-6 days |
-| 4: Path Learning | DP-8, DP-9, DP-10, DP-11 | 8-13 days |
-| 5: Emergence | DP-12, DP-13, DP-14, DP-15 | 8-12 days |
-| **Total** | **15 stories** | **26-41 days** |
+| Phase | Stories | Status | Remaining |
+|-------|---------|--------|-----------|
+| 1: Foundation | DP-1, DP-2, DP-3, DP-4 | NOT STARTED | 4-7 days |
+| 2: Topology | DP-5 | PARTIAL (clustering done, dashboard pending) | 1-2 days |
+| 3: Graph-Native | DP-6a, DP-6, DP-7 | DP-6a COMPLETE, DP-6 PARTIAL | 2-4 days |
+| 4: Path Learning | DP-8, DP-9, DP-10, DP-11 | NOT STARTED | 8-13 days |
+| 5: Emergence | DP-12, DP-13, DP-14, DP-15 | NOT STARTED | 8-12 days |
+| **Total** | **16 stories** | **2 complete, 2 partial** | **~23-38 days** |
 
-With parallelism within phases, critical path is ~18-25 working days.
+Critical path runs through: DP-2 → DP-3 → DP-5 → DP-6 → DP-7 → DP-9 → DP-10.
 
 ---
 
@@ -646,3 +748,4 @@ convergence point described in DESIRE-PATHS.md.
 ---
 
 *Written by Nicholai and Mr. Claude. March 11, 2026.*
+*Updated March 20, 2026: DP-6a complete, benchmark findings, status updates.*

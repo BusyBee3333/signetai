@@ -447,7 +447,6 @@ export function traverseKnowledgeGraph(
 			// Fallback: when entity_attributes yielded no memories for this
 			// entity (e.g. inline-linked memories without full pipeline
 			// extraction), collect via memory_entity_mentions instead.
-			const preCount = memoryIds.size;
 			if (checkDeadline() || memoryIds.size >= budget) return;
 			const mentionBudget = Math.min(config.maxAttributesPerAspect, budget - memoryIds.size);
 			if (mentionBudget <= 0) return;

@@ -2837,7 +2837,6 @@ app.post("/api/memory/remember", async (c) => {
 			logger.debug("memory", "Inline entity linking", {
 				id,
 				linked: linkResult.linked,
-				created: linkResult.created,
 				aspects: linkResult.aspects,
 				attributes: linkResult.attributes,
 			});
@@ -7274,6 +7273,67 @@ app.post("/api/repair/cluster-entities", (c) => {
 		clusterEntities(db, agentId),
 	);
 	return c.json(result);
+});
+
+app.post("/api/repair/relink-entities", async (c) => {
+	const agentId = c.req.query("agent_id") ?? "default";
+	let batchSize = 500;
+	try {
+		const body = await c.req.json();
+		if (typeof body?.batchSize === "number") batchSize = body.batchSize;
+	} catch {
+		// defaults
+	}
+	const accessor = getDbAccessor();
+
+	// Find memories with no entity mentions
+	const unlinked = accessor.withReadDb((db) =>
+		db.prepare(
+			`SELECT id, content FROM memories
+			 WHERE is_deleted = 0 AND scope IS NULL
+			   AND id NOT IN (SELECT DISTINCT memory_id FROM memory_entity_mentions)
+			 LIMIT ?`,
+		).all(batchSize) as Array<{ id: string; content: string }>,
+	);
+
+	if (unlinked.length === 0) {
+		return c.json({ action: "relink-entities", linked: 0, remaining: 0, message: "all memories linked" });
+	}
+
+	let linked = 0;
+	let entities = 0;
+	let aspects = 0;
+	let attributes = 0;
+
+	for (const mem of unlinked) {
+		const result = accessor.withWriteTx((db) =>
+			linkMemoryToEntities(db, mem.id, mem.content, agentId),
+		);
+		linked += result.linked;
+		entities += result.entityIds.length;
+		aspects += result.aspects;
+		attributes += result.attributes;
+	}
+
+	// Check how many remain
+	const remaining = accessor.withReadDb((db) =>
+		(db.prepare(
+			`SELECT COUNT(*) as cnt FROM memories
+			 WHERE is_deleted = 0 AND scope IS NULL
+			   AND id NOT IN (SELECT DISTINCT memory_id FROM memory_entity_mentions)`,
+		).get() as { cnt: number }).cnt,
+	);
+
+	return c.json({
+		action: "relink-entities",
+		processed: unlinked.length,
+		linked,
+		entities,
+		aspects,
+		attributes,
+		remaining,
+		message: remaining > 0 ? `${remaining} memories still need linking — call again` : "all memories linked",
+	});
 });
 
 // ============================================================================
