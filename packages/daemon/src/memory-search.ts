@@ -163,11 +163,9 @@ function sanitizeFtsQuery(raw: string): string {
 		.filter(Boolean) as string[];
 
 	if (tokens.length === 0) return "";
-	// Always use OR — BM25 IDF naturally ranks rare terms higher.
-	// AND is too aggressive: short queries with uncommon synonyms
-	// (e.g. "partake", "destress") yield zero results when the
-	// stored memories use different vocabulary.
-	if (tokens.length === 1) return tokens[0];
+	// Short queries (<=3 content tokens): implicit AND for precision.
+	// Longer queries: OR so BM25 IDF ranks by term importance.
+	if (tokens.length <= 3) return tokens.join(" ");
 	return tokens.join(" OR ");
 }
 
