@@ -2828,7 +2828,7 @@ app.post("/api/memory/remember", async (c) => {
 
 	// Inline entity linking — immediate KG integration so KA traversal
 	// can find this memory without waiting for async pipeline extraction.
-	let linkResult: { linked: number; created: number; entityIds: string[] } | null = null;
+	let linkResult: { linked: number; created: number; entityIds: string[]; aspects: number; attributes: number } | null = null;
 	try {
 		linkResult = getDbAccessor().withWriteTx((db) =>
 			linkMemoryToEntities(db, id, normalizedContent.storageContent, "default"),
@@ -2838,6 +2838,8 @@ app.post("/api/memory/remember", async (c) => {
 				id,
 				linked: linkResult.linked,
 				created: linkResult.created,
+				aspects: linkResult.aspects,
+				attributes: linkResult.attributes,
 			});
 		}
 	} catch (e) {
