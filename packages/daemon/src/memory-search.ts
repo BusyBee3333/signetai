@@ -391,15 +391,19 @@ export async function hybridRecall(
 			}
 		}
 
-		// Channel merge: interleave traversal + flat, ensuring both channels
-		// get representation. Flat search always gets at least 40% of slots
-		// so keyword/vector matches aren't starved by broad traversal walks.
+		// Channel merge: ensure flat candidates are eligible to compete in the
+		// final sorted pool. Flat gets at least 40% of pre-sort slots so hub
+		// entities (high-mention traversal walks) can't exclude keyword/vector
+		// matches entirely. After the sort, final top-N is score-ordered —
+		// the guarantee is eligibility, not placement.
 		const traversalIds = new Set(traversalScored.map((s) => s.id));
 		const flatOnly = flatScored.filter((s) => !traversalIds.has(s.id));
 		const minFlat = Math.ceil(limit * 0.4);
 		const maxTraversal = limit - Math.min(minFlat, flatOnly.length);
 		scored = [
 			...traversalScored.slice(0, maxTraversal),
+			// When traversal underperforms its cap, flat absorbs the surplus
+			// slots — this is intentional, not a bug.
 			...flatOnly.slice(0, limit - Math.min(maxTraversal, traversalScored.length)),
 		];
 		scored.sort((a, b) => b.score - a.score);
