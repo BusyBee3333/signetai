@@ -443,6 +443,53 @@ export function traverseKnowledgeGraph(
 					}
 				}
 			}
+
+			// Fallback: when entity_attributes yielded no memories for this
+			// entity (e.g. inline-linked memories without full pipeline
+			// extraction), collect via memory_entity_mentions instead.
+			const preCount = memoryIds.size;
+			if (checkDeadline() || memoryIds.size >= budget) return;
+			const mentionBudget = Math.min(config.maxAttributesPerAspect, budget - memoryIds.size);
+			if (mentionBudget <= 0) return;
+
+			let mentionRows: Array<{ memory_id: string; importance: number }>;
+			if (config.scope !== undefined) {
+				const scopeClause = config.scope === null
+					? "AND m.scope IS NULL"
+					: "AND m.scope = ?";
+				const scopeArgs: unknown[] = config.scope === null ? [] : [config.scope];
+				mentionRows = db
+					.prepare(
+						`SELECT mem.memory_id, COALESCE(m.importance, 0.5) AS importance
+						 FROM memory_entity_mentions mem
+						 JOIN memories m ON m.id = mem.memory_id
+						 WHERE mem.entity_id = ?
+						   AND m.is_deleted = 0 ${scopeClause}
+						 ORDER BY mem.confidence DESC, m.importance DESC
+						 LIMIT ?`,
+					)
+					.all(entityId, ...scopeArgs, mentionBudget) as Array<{ memory_id: string; importance: number }>;
+			} else {
+				mentionRows = db
+					.prepare(
+						`SELECT mem.memory_id, COALESCE(m.importance, 0.5) AS importance
+						 FROM memory_entity_mentions mem
+						 JOIN memories m ON m.id = mem.memory_id
+						 WHERE mem.entity_id = ?
+						   AND m.is_deleted = 0
+						 ORDER BY mem.confidence DESC, m.importance DESC
+						 LIMIT ?`,
+					)
+					.all(entityId, mentionBudget) as Array<{ memory_id: string; importance: number }>;
+			}
+
+			for (const row of mentionRows) {
+				memoryIds.add(row.memory_id);
+				const current = memoryScores.get(row.memory_id);
+				if (current === undefined || row.importance > current) {
+					memoryScores.set(row.memory_id, row.importance);
+				}
+			}
 		};
 
 		for (const entityId of focalIds) {
