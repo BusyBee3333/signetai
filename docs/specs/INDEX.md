@@ -245,9 +245,14 @@ cannot suppress them. This is a hard retrieval invariant.
 - DP-2 (edge confidence) adds `confidence` and `reason` columns to
   `entity_dependencies`. Graph traversal uses `confidence * strength`
   for edge filtering.
-- DP-6 (entity-anchored search) replaces the heuristic focal entity
-  resolution in `resolveFocalEntities` with FTS5 + embedding search
-  against entities. Current resolution becomes fallback.
+- DP-6 (traversal-primary retrieval) inverts the search pipeline so
+  graph traversal produces the base candidate pool and flat FTS5 search
+  fills gaps. Includes: FTS5 stop-word filtering, agent_id threading
+  through graph search, mention-based traversal fallback for memories
+  without full pipeline extraction, and scope-filtered attribute
+  collection. Benchmarked at 62% (Signet) vs 68% (RAG) on identical
+  50-question LoCoMo set — 8 of 12 Signet failures are shared with
+  RAG (extraction/answer ceiling, not retrieval).
 - DP-7 (constructed memories) changes traversal output from
   `memoryIds` to structured path objects with provenance metadata.
 - DP-14 (discovered principles) adds `principle` to the entity type
@@ -352,6 +357,12 @@ Phase ordering based on hard dependencies and integration contracts.
 - **Desire Paths Phase 3**: graph-native retrieval
   - DP-6: Entity-anchored search + traversal-primary retrieval — COMPLETE
   - DP-7: Constructed memories with path provenance — COMPLETE
+- **Benchmark baseline (2026-03-20)**: 50-question LoCoMo comparison on
+  identical question sets. Signet 62% vs RAG 68%. Signet wins adversarial
+  (80% vs 70%), ties multi-hop (80%), trails single-hop (30% vs 40%) and
+  world-knowledge (50% vs 70%). 8 of 12 Signet failures are shared with
+  RAG — extraction/answer ceiling, not retrieval. E22 (mention fallback)
+  pending.
 - **Desire Paths Phase 4**: path learning
   - DP-8: Predictor bug fixes (cache invalidation) — COMPLETE
   - DP-9: Path feedback propagation — NOT STARTED
