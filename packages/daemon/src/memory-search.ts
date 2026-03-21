@@ -391,12 +391,17 @@ export async function hybridRecall(
 			}
 		}
 
-		// Channel B merge: traversal memories first, flat fills remaining slots.
-		// Cap gap-fill so OR fan-out doesn't flood the merge and dilute traversal.
+		// Channel merge: interleave traversal + flat, ensuring both channels
+		// get representation. Flat search always gets at least 40% of slots
+		// so keyword/vector matches aren't starved by broad traversal walks.
 		const traversalIds = new Set(traversalScored.map((s) => s.id));
-		const gapBudget = Math.max(0, limit - traversalScored.length);
-		const gapFill = flatScored.filter((s) => !traversalIds.has(s.id)).slice(0, gapBudget);
-		scored = [...traversalScored, ...gapFill];
+		const flatOnly = flatScored.filter((s) => !traversalIds.has(s.id));
+		const minFlat = Math.ceil(limit * 0.4);
+		const maxTraversal = limit - Math.min(minFlat, flatOnly.length);
+		scored = [
+			...traversalScored.slice(0, maxTraversal),
+			...flatOnly.slice(0, limit - Math.min(maxTraversal, traversalScored.length)),
+		];
 		scored.sort((a, b) => b.score - a.score);
 
 		applyRehearsalBoost(scored, cfg.search);
