@@ -13,6 +13,7 @@ export type LogCategory =
 	| "sync"
 	| "git"
 	| "github-source"
+	| "gmail-source"
 	| "gohighlevel-source"
 	| "notion-source"
 	| "stripe-source"

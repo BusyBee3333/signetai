@@ -8,6 +8,7 @@ import {
 	addObsidianSource,
 	loadSourcesConfig,
 	notionSourceId,
+	gmailSourceId,
 	goHighLevelSourceId,
 	stripeSourceId,
 	removeSourceIfGeneration,
@@ -728,6 +729,50 @@ describe("Sources routes", () => {
 		} finally {
 			releaseDeletion?.();
 		}
+	});
+
+	it("connects a Gmail source and queues the shared source index job", async () => {
+		globalThis.fetch = mock(() =>
+			Promise.resolve(Response.json({ error: "invalid_grant" }, { status: 400 })),
+		) as typeof fetch;
+
+		const res = await makeApp().request("/api/sources/gmail", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ tokenRef: "GMAIL_OAUTH", name: "Route Gmail", query: "label:billing", maxMessages: 25 }),
+		});
+
+		expect(res.status).toBe(202);
+		const body = (await res.json()) as {
+			source: { id: string; kind: string; name: string; providerSettings?: Record<string, unknown> };
+			queued: boolean;
+		};
+		expect(body.queued).toBe(true);
+		expect(body.source).toMatchObject({ kind: "gmail", name: "Route Gmail", id: gmailSourceId("GMAIL_OAUTH") });
+		expect(body.source.providerSettings).toEqual({ tokenRef: "GMAIL_OAUTH", query: "label:billing", maxMessages: 25 });
+		expect(loadSourcesConfig(dir).sources.map((source) => source.id)).toEqual([body.source.id]);
+	});
+
+	it("rejects malformed Gmail source bodies before writing config", async () => {
+		for (const payload of [
+			null,
+			[],
+			{},
+			{ tokenRef: 42 },
+			{ tokenRef: "GMAIL_OAUTH", name: ["x"] },
+			{ tokenRef: "GMAIL_OAUTH", query: 7 },
+			{ tokenRef: "GMAIL_OAUTH", maxMessages: "25" },
+			{ tokenRef: "GMAIL_OAUTH", maxMessages: 0 },
+			{ tokenRef: '{"refresh_token":"raw"}' },
+		]) {
+			const res = await makeApp().request("/api/sources/gmail", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+			expect(res.status).toBe(400);
+		}
+		expect(loadSourcesConfig(dir).sources).toHaveLength(0);
 	});
 
 	it("connects a GoHighLevel source and queues the shared source index job", async () => {

@@ -7,12 +7,15 @@ import { promisify } from "node:util";
 import {
 	LEGACY_OBSIDIAN_CHUNK_SOURCE_TYPE,
 	SOURCE_CHUNK_SOURCE_TYPE,
+	type AddGmailSourceInput,
 	type AddGoHighLevelSourceInput,
 	type AddStripeSourceInput,
 	type SignetSourceEntry,
 	addDiscordSource,
 	addGitHubSource,
+	addGmailSource,
 	addGoHighLevelSource,
+	gmailSourceId,
 	goHighLevelSourceId,
 	addNotionSource,
 	addStripeSource,
@@ -222,6 +225,7 @@ export function registerSourcesRoutes(app: Hono, deps: RegisterSourcesRoutesDeps
 	app.use("/api/sources/obsidian", gate("admin"));
 	app.use("/api/sources/discord", gate("connectors"));
 	app.use("/api/sources/github", gate("connectors"));
+	app.use("/api/sources/gmail", gate("connectors"));
 	app.use("/api/sources/gohighlevel", gate("connectors"));
 	app.use("/api/sources/notion", gate("connectors"));
 	app.use("/api/sources/stripe", gate("connectors"));
@@ -592,6 +596,41 @@ export function registerSourcesRoutes(app: Hono, deps: RegisterSourcesRoutesDeps
 		}
 	});
 
+	app.post("/api/sources/gmail", async (c) => {
+		let parsed: unknown;
+		try {
+			parsed = await c.req.json();
+		} catch {
+			recordSourceConnectionFailure("gmail", "invalid configuration");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+		const body = parseAddGmailSourceBody(parsed);
+		if ("error" in body) {
+			recordSourceConnectionFailure("gmail", "invalid configuration");
+			return c.json({ error: body.error }, 400);
+		}
+		const releaseSourceMutation = beginSourceMutationLease(c, gmailSourceId(body.tokenRef));
+		if (typeof releaseSourceMutation !== "function") return releaseSourceMutation;
+		try {
+			const result = addGmailSource(body, agentsDir);
+			if (result.ok === false) {
+				recordSourceConnectionFailure("gmail", result.error);
+				return c.json({ error: result.error }, 400);
+			}
+			await recordSourceConnected(result.source, resolveDaemonAgentId());
+			const job = enqueueSourceIndexJob({
+				source: result.source,
+				agentsDir,
+				startBridge,
+				purgeNativeSource,
+				recordIndexOperation,
+			});
+			return c.json({ source: result.source, created: result.created, indexed: 0, queued: true, job }, 202);
+		} finally {
+			releaseSourceMutation();
+		}
+	});
+
 	app.post("/api/sources/gohighlevel", async (c) => {
 		let parsed: unknown;
 		try {
@@ -810,6 +849,22 @@ function parseAddNotionSourceBody(
 		tokenRef: body.tokenRef,
 		...(typeof body.name === "string" ? { name: body.name } : {}),
 		...(typeof body.maxPages === "number" ? { maxPages: body.maxPages } : {}),
+	};
+}
+
+function parseAddGmailSourceBody(value: unknown): AddGmailSourceInput | { readonly error: string } {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return { error: "Request body must be an object" };
+	const body = value as Record<string, unknown>;
+	if (typeof body.tokenRef !== "string") return { error: "Gmail tokenRef is required" };
+	if (body.name !== undefined && typeof body.name !== "string") return { error: "Gmail name must be a string" };
+	if (body.query !== undefined && typeof body.query !== "string") return { error: "Gmail query must be a string" };
+	if (body.maxMessages !== undefined && typeof body.maxMessages !== "number")
+		return { error: "Gmail maxMessages must be a number" };
+	return {
+		tokenRef: body.tokenRef,
+		...(typeof body.name === "string" ? { name: body.name } : {}),
+		...(typeof body.query === "string" ? { query: body.query } : {}),
+		...(typeof body.maxMessages === "number" ? { maxMessages: body.maxMessages } : {}),
 	};
 }
 

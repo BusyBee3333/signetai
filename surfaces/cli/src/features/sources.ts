@@ -4,12 +4,14 @@ import {
 	type AddDiscordSourceInput,
 	type AddGitHubSourceInput,
 	type AddNotionSourceInput,
+	type AddGmailSourceInput,
 	type AddGoHighLevelSourceInput,
 	type AddStripeSourceInput,
 	type SignetSourceEntry,
 	addDiscordSource,
 	addGitHubSource,
 	addNotionSource,
+	addGmailSource,
 	addGoHighLevelSource,
 	addStripeSource,
 	addObsidianSource,
@@ -130,6 +132,7 @@ export interface SourcesDeps extends SourceImportDeps {
 	readonly addDiscordSourceToDaemon?: (input: AddDiscordSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addGitHubSourceToDaemon?: (input: AddGitHubSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addNotionSourceToDaemon?: (input: AddNotionSourceInput) => Promise<DaemonAddSourceResult>;
+	readonly addGmailSourceToDaemon?: (input: AddGmailSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addGoHighLevelSourceToDaemon?: (input: AddGoHighLevelSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addStripeSourceToDaemon?: (input: AddStripeSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly removeSourceFromDaemon?: (sourceId: string) => Promise<DaemonRemoveSourceResult>;
@@ -397,6 +400,47 @@ export async function addNotionSourceFromCli(options: AddNotionSourceOptions, de
 	console.log(chalk.dim("Run `signet daemon restart` if the daemon is already running."));
 }
 
+export interface AddGmailSourceOptions {
+	readonly tokenRef: string;
+	readonly name?: string;
+	readonly query?: string;
+	readonly maxMessages?: string;
+}
+
+export async function addGmailSourceFromCli(options: AddGmailSourceOptions, deps: SourcesDeps): Promise<void> {
+	const maxMessages = parseIntegerOption(options.maxMessages, "Gmail max-messages");
+	if (isParseError(maxMessages)) {
+		console.error(chalk.red(`✗ ${maxMessages.error}`));
+		process.exitCode = 1;
+		return;
+	}
+	const input: AddGmailSourceInput = {
+		tokenRef: options.tokenRef,
+		name: options.name,
+		...(options.query !== undefined ? { query: options.query } : {}),
+		maxMessages,
+	};
+	const daemonResult = await addSourceThroughDaemon(input, deps.addGmailSourceToDaemon);
+	if (daemonResult) {
+		const handled = printDaemonAddSourceResult("Gmail", daemonResult);
+		if (handled) return;
+	}
+
+	const result = addGmailSource(input, deps.agentsDir);
+	if (result.ok === false) {
+		console.error(chalk.red(`✗ ${result.error}`));
+		process.exitCode = 1;
+		return;
+	}
+
+	const verb = result.created ? "Added" : "Updated";
+	console.log(chalk.green(`✓ ${verb} Gmail source: ${result.source.name}`));
+	console.log(chalk.dim(`  tokenRef: ${options.tokenRef.trim()}`));
+	console.log();
+	console.log(chalk.dim("The daemon indexes message headers and text; attachment contents are not stored."));
+	console.log(chalk.dim("Run `signet daemon restart` if the daemon is already running."));
+}
+
 export interface AddGoHighLevelSourceOptions {
 	readonly location: string;
 	readonly tokenRef: string;
@@ -515,6 +559,14 @@ export async function listSources(deps: SourcesDeps): Promise<void> {
 			if (repos.length > 0) console.log(chalk.dim(`  repos: ${repos.join(", ")}`));
 			if (typeof source.providerSettings.tokenRef === "string")
 				console.log(chalk.dim(`  tokenRef: ${source.providerSettings.tokenRef}`));
+		}
+		if (source.kind === "gmail" && source.providerSettings) {
+			if (typeof source.providerSettings.tokenRef === "string")
+				console.log(chalk.dim(`  tokenRef: ${source.providerSettings.tokenRef}`));
+			if (typeof source.providerSettings.query === "string" && source.providerSettings.query)
+				console.log(chalk.dim(`  query: ${source.providerSettings.query}`));
+			if (typeof source.providerSettings.maxMessages === "number")
+				console.log(chalk.dim(`  max messages: ${source.providerSettings.maxMessages}`));
 		}
 		if (source.kind === "gohighlevel" && source.providerSettings) {
 			if (typeof source.providerSettings.locationId === "string")

@@ -153,6 +153,20 @@ export interface AddStripeSourceInput {
 	readonly now?: string;
 }
 
+export interface GmailSourceSettings {
+	readonly tokenRef: string;
+	readonly query: string;
+	readonly maxMessages: number;
+}
+
+export interface AddGmailSourceInput {
+	readonly tokenRef: string;
+	readonly name?: string;
+	readonly query?: string;
+	readonly maxMessages?: number;
+	readonly now?: string;
+}
+
 export type GoHighLevelSourceResourceType = "contacts" | "opportunities";
 
 export interface GoHighLevelSourceSettings {
@@ -219,6 +233,9 @@ export const DEFAULT_STRIPE_RESOURCE_TYPES = ["customers", "subscriptions", "inv
 export const DEFAULT_STRIPE_MAX_ITEMS_PER_TYPE = 5_000;
 export const MAX_STRIPE_MAX_ITEMS_PER_TYPE = 100_000;
 const VALID_STRIPE_RESOURCE_TYPES = new Set<string>(DEFAULT_STRIPE_RESOURCE_TYPES);
+export const DEFAULT_GMAIL_MAX_MESSAGES = 5_000;
+export const MAX_GMAIL_MAX_MESSAGES = 200_000;
+export const MAX_GMAIL_QUERY_CHARS = 500;
 export const DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES = ["contacts", "opportunities"] as const;
 export const DEFAULT_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE = 50_000;
 export const MAX_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE = 500_000;
@@ -304,6 +321,14 @@ export function addStripeSource(input: AddStripeSourceInput, agentsDir = getAgen
 
 export function stripeSourceId(tokenRef: string): string {
 	return `stripe:${createHash("sha256").update(tokenRef.trim()).digest("hex").slice(0, 16)}`;
+}
+
+export function addGmailSource(input: AddGmailSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	return withSourcesConfigLock(agentsDir, () => addGmailSourceUnlocked(input, agentsDir));
+}
+
+export function gmailSourceId(tokenRef: string): string {
+	return `gmail:${createHash("sha256").update(tokenRef.trim()).digest("hex").slice(0, 16)}`;
 }
 
 export function addGoHighLevelSource(input: AddGoHighLevelSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
@@ -653,6 +678,71 @@ function addStripeSourceChecked(input: AddStripeSourceInput, agentsDir = getAgen
 	};
 	saveSourcesConfig({ version: SOURCES_CONFIG_VERSION, sources: [...cfg.sources, source] }, agentsDir);
 	return { ok: true, source, created: true };
+}
+
+function addGmailSourceUnlocked(input: AddGmailSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	try {
+		return addGmailSourceChecked(input, agentsDir);
+	} catch (err) {
+		const detail = err instanceof Error ? err.message : String(err);
+		return { ok: false, error: detail };
+	}
+}
+
+function addGmailSourceChecked(input: AddGmailSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	const now = input.now ?? new Date().toISOString();
+	const cfg = loadSourcesConfigForWrite(agentsDir);
+	const tokenRef = typeof input.tokenRef === "string" ? input.tokenRef.trim() : "";
+	const sourceId = gmailSourceId(tokenRef);
+	const existing = cfg.sources.find((source) => source.id === sourceId);
+	const settings = buildGmailSettings(input, existing ? parseGmailSettings(existing.providerSettings) : undefined);
+	if ("error" in settings) return { ok: false, error: settings.error };
+	const root = `gmail://accounts/${settings.tokenRef}`;
+	if (existing) {
+		const updated: SignetSourceEntry = {
+			...existing,
+			name: cleanName(input.name) ?? existing.name,
+			root,
+			enabled: true,
+			providerSettings: gmailSettingsProviderSettings(settings),
+			generation: newSourceGeneration(),
+			updatedAt: now,
+		};
+		saveSourcesConfig(
+			{
+				version: SOURCES_CONFIG_VERSION,
+				sources: cfg.sources.map((source) => (source.id === existing.id ? updated : source)),
+			},
+			agentsDir,
+		);
+		return { ok: true, source: updated, created: false };
+	}
+
+	const source: SignetSourceEntry = {
+		id: sourceId,
+		generation: newSourceGeneration(),
+		kind: "gmail",
+		name: cleanName(input.name) ?? "Gmail",
+		root,
+		enabled: true,
+		mode: "read-only",
+		createdAt: now,
+		updatedAt: now,
+		providerSettings: gmailSettingsProviderSettings(settings),
+	};
+	saveSourcesConfig({ version: SOURCES_CONFIG_VERSION, sources: [...cfg.sources, source] }, agentsDir);
+	return { ok: true, source, created: true };
+}
+
+export function parseGmailSettings(raw?: SignetSourceProviderSettings): GmailSourceSettings {
+	const tokenRef = typeof raw?.tokenRef === "string" ? raw.tokenRef.trim() : "";
+	if (!tokenRef) throw new Error("Gmail source has no tokenRef");
+	const query = typeof raw?.query === "string" ? raw.query.trim().slice(0, MAX_GMAIL_QUERY_CHARS) : "";
+	return {
+		tokenRef,
+		query,
+		maxMessages: cleanPositiveInteger(raw?.maxMessages, MAX_GMAIL_MAX_MESSAGES) ?? DEFAULT_GMAIL_MAX_MESSAGES,
+	};
 }
 
 function addGoHighLevelSourceUnlocked(input: AddGoHighLevelSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
@@ -1011,6 +1101,37 @@ function stripeSettingsProviderSettings(settings: StripeSourceSettings): SignetS
 		resourceTypes: settings.resourceTypes,
 		maxItemsPerType: settings.maxItemsPerType,
 	};
+}
+
+function buildGmailSettings(
+	input: AddGmailSourceInput,
+	existing?: GmailSourceSettings,
+): GmailSourceSettings | { readonly error: string } {
+	const tokenRef = typeof input.tokenRef === "string" ? input.tokenRef.trim() : "";
+	if (!tokenRef) return { error: "Gmail tokenRef is required" };
+	if (looksLikeRawGmailCredential(tokenRef))
+		return { error: "Gmail tokenRef must be a secret reference, not raw credentials" };
+	if (input.query !== undefined) {
+		if (typeof input.query !== "string") return { error: "Gmail query must be a string" };
+		if (input.query.trim().length > MAX_GMAIL_QUERY_CHARS) {
+			return { error: `Gmail query must be at most ${MAX_GMAIL_QUERY_CHARS} characters` };
+		}
+	}
+	if (
+		input.maxMessages !== undefined &&
+		cleanPositiveInteger(input.maxMessages, MAX_GMAIL_MAX_MESSAGES) !== input.maxMessages
+	) {
+		return { error: `Gmail maxMessages must be an integer between 1 and ${MAX_GMAIL_MAX_MESSAGES}` };
+	}
+	return {
+		tokenRef,
+		query: input.query !== undefined ? input.query.trim() : (existing?.query ?? ""),
+		maxMessages: input.maxMessages ?? existing?.maxMessages ?? DEFAULT_GMAIL_MAX_MESSAGES,
+	};
+}
+
+function gmailSettingsProviderSettings(settings: GmailSourceSettings): SignetSourceProviderSettings {
+	return { tokenRef: settings.tokenRef, query: settings.query, maxMessages: settings.maxMessages };
 }
 
 function buildGoHighLevelSettings(
@@ -1536,6 +1657,19 @@ function looksLikeRawStripeKey(value: string): boolean {
 	const withoutAuthScheme = withoutHeaderPrefix.replace(/^(bearer|basic)\s+/i, "").trim();
 	if (withoutAuthScheme !== trimmed) return true;
 	return /^(sk|rk)_(live|test)_[A-Za-z0-9]{10,}$/.test(withoutAuthScheme);
+}
+
+function looksLikeRawGmailCredential(value: string): boolean {
+	const trimmed = value.trim();
+	const withoutHeaderPrefix = trimmed.replace(/^authorization:\s*/i, "").trim();
+	const withoutAuthScheme = withoutHeaderPrefix.replace(/^bearer\s+/i, "").trim();
+	if (withoutAuthScheme !== trimmed) return true;
+	return (
+		withoutAuthScheme.startsWith("{") ||
+		/^ya29\.[A-Za-z0-9_-]{10,}/.test(withoutAuthScheme) ||
+		/^1\/\/[A-Za-z0-9_-]{20,}$/.test(withoutAuthScheme) ||
+		/^GOCSPX-[A-Za-z0-9_-]{10,}$/.test(withoutAuthScheme)
+	);
 }
 
 function looksLikeRawGoHighLevelToken(value: string): boolean {

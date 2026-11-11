@@ -1,6 +1,7 @@
 import type { SignetSourceEntry, SignetSourceKind, SourceFailureState } from "@signet/core";
 import { discordSourceProvider } from "./discord-source-provider";
 import { githubSourceProvider } from "./github-source-provider";
+import { gmailSourceProvider } from "./gmail-source-provider";
 import { goHighLevelSourceProvider } from "./gohighlevel-source-provider";
 import { notionSourceProvider } from "./notion-source-provider";
 import { stripeSourceProvider } from "./stripe-source-provider";
@@ -70,6 +71,7 @@ export function getSourceProvider(kind: SignetSourceKind): SourceProviderAdapter
 	if (kind === obsidianSourceProvider.kind) return obsidianSourceProvider;
 	if (kind === discordSourceProvider.kind) return discordSourceProvider;
 	if (kind === githubSourceProvider.kind) return githubSourceProvider;
+	if (kind === gmailSourceProvider.kind) return gmailSourceProvider;
 	if (kind === goHighLevelSourceProvider.kind) return goHighLevelSourceProvider;
 	if (kind === notionSourceProvider.kind) return notionSourceProvider;
 	if (kind === stripeSourceProvider.kind) return stripeSourceProvider;
@@ -83,6 +85,7 @@ export function configuredSourceProviders(): readonly SourceProviderAdapter[] {
 		obsidianSourceProvider,
 		discordSourceProvider,
 		githubSourceProvider,
+		gmailSourceProvider,
 		goHighLevelSourceProvider,
 		notionSourceProvider,
 		stripeSourceProvider,
