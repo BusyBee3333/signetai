@@ -800,6 +800,40 @@ and bank details and hosted invoice or receipt links are never stored. Objects
 whose rendered content is unchanged are not rewritten, and objects that no
 longer appear are removed only after a resource type is enumerated to the end.
 
+### GET /api/sources/identity
+
+Look one person or company up across connected sources. Requires the `recall`
+permission. Nothing is stored; the result is derived from source artifacts for
+the daemon's agent.
+
+Query parameter: `q` (required, at most 200 characters) is an email address, a
+phone number, a tool ID, or an exact name.
+
+```json
+{
+  "query": "dana@example.com",
+  "keys": [{ "type": "email", "value": "dana@example.com" }],
+  "records": [
+    {
+      "sourcePath": "stripe://sources/stripe:75c5/customers/cus_123",
+      "sourceKind": "source_stripe_customer",
+      "sourceId": "stripe:75c5",
+      "provider": "stripe",
+      "title": "Dana Whitfield",
+      "match": "email",
+      "matchedValue": "dana@example.com"
+    }
+  ],
+  "possible": [],
+  "truncated": false
+}
+```
+
+`records` are confirmed by a shared email address, phone number, or tool ID
+(`match` is `query`, `email`, `phone`, or `id`). `possible` lists same-name
+person records with no shared email address or phone number. Returns `400` when
+`q` is missing or too long and `503` when the lookup cannot complete.
+
 ### DELETE /api/sources/:sourceId
 
 Remove a source config and purge Signet-owned source artifacts, graph rows,

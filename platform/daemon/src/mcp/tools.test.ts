@@ -285,6 +285,7 @@ describe("createMcpServer", () => {
 		expect(names).toContain("memory_feedback");
 		expect(names).toContain("signet_recall");
 		expect(names).toContain("signet_source_search");
+		expect(names).toContain("signet_identity_lookup");
 		expect(names).toContain("signet_session_search");
 		expect(names).toContain("signet_save_note");
 		expect(names).toContain("knowledge_expand");
@@ -328,7 +329,7 @@ describe("createMcpServer", () => {
 		for (const alias of GRAPHIQ_COMPAT_ALIASES) {
 			expect(names).toContain(alias);
 		}
-		expect(names.length).toBe(62);
+		expect(names.length).toBe(63);
 	});
 
 	it("forwards bounded claim trace inputs to the canonical daemon route", async () => {
@@ -908,6 +909,18 @@ describe("createMcpServer", () => {
 				includeRecalled: true,
 				scope: "session",
 			});
+		});
+	});
+
+	describe("signet_identity_lookup", () => {
+		it("asks the daemon for cross-source records with the query encoded", async () => {
+			const cap: { url?: string; body?: string } = {};
+			mockFetch(200, { query: "a+b@example.com", keys: [], records: [], possible: [], truncated: false }, cap);
+
+			const result = await callTool(server, "signet_identity_lookup", { query: "a+b@example.com" });
+
+			expect(cap.url).toBe("http://localhost:3850/api/sources/identity?q=a%2Bb%40example.com");
+			expect(JSON.stringify(result)).toContain("possible");
 		});
 	});
 

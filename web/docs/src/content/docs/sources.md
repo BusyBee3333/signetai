@@ -548,6 +548,16 @@ For whole-file artifact hits, the content includes a visible header like:
 
 Agents should treat `source_path` as the canonical inspection handle. If a task requires exact context, read the source file rather than guessing from the recall snippet.
 
+## Looking one person up across sources
+
+`GET /api/sources/identity?q=<email, phone number, tool ID, or exact name>` and the `signet_identity_lookup` MCP tool return every connected-source record for one person or company across tools. The lookup is computed from source artifacts when you ask; it stores nothing and writes no semantic claims.
+
+- `records` are confirmed. A record is confirmed only when it shares an email address or a phone number with another confirmed record in a labelled field, or when it names a confirmed person's tool ID (for example a Stripe subscription naming `cus_...`). Each record reports which value matched.
+- `possible` are person records with the same name and no shared email address or phone number. They are not confirmed; ask before treating them as the same person.
+- `truncated: true` means a bound was reached and more records may exist.
+
+Phone numbers compare on their last ten digits. Person records are currently Stripe customers and GoHighLevel contacts. A phone number or email address shared by several people (a family or front-desk number) joins those people's records; the `match` value on each record shows why it was included.
+
 ## Updating in place
 
 Connected knowledge bases update in place. When files change, the daemon re-reads the source and refreshes Signet-owned artifacts, graph rows, and chunks.
@@ -619,6 +629,7 @@ The daemon exposes the Sources lifecycle under `/api/sources`:
 | `POST` | `/api/sources/notion` | Add/update a Notion source and queue a shared source index job. |
 | `POST` | `/api/sources/stripe` | Add/update a Stripe source and queue a shared source index job. |
 | `POST` | `/api/sources/web` | Add/update a public Web page source and queue a shared source index job. |
+| `GET` | `/api/sources/identity` | Look one person or company up across connected sources. |
 | `GET` | `/api/sources/:sourceId/health` | Inspect source health diagnostics used by the dashboard. |
 | `GET` | `/api/sources/:sourceId/snapshot` | Export source-owned artifacts as a Signet source snapshot. |
 | `POST` | `/api/sources/:sourceId/snapshot/import` | Import a Signet source snapshot into an existing source. |

@@ -45,6 +45,7 @@ unsafe shell syntax into generated lifecycle hooks.
 | Automatic memory extraction after each prompt | Hooks |
 | Agent wants to search memories mid-conversation | MCP (`signet_recall`, compatibility `memory_search`) |
 | Agent wants to search source-backed docs/artifacts | MCP (`signet_source_search`) |
+| Agent needs every record for one person across connected tools | MCP (`signet_identity_lookup`) |
 | Agent needs to audit a claim's versions and authorized evidence | MCP (`signet_explain_claim`) |
 | Sub-agent needs to inspect its parent session | MCP (`signet_session_search`, compatibility `session_search`) |
 | Codex agent wants to save a durable native-memory note | MCP (`signet_save_note`) |

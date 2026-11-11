@@ -635,6 +635,23 @@ export async function createMcpServer(opts?: McpServerOptions): Promise<McpServe
 	);
 	registerMcpTool(
 		server,
+		"signet_identity_lookup",
+		{
+			title: "Signet Identity Lookup",
+			description:
+				"Find every connected-source record for one person or company across tools (for example Stripe and GoHighLevel) from an email address, phone number, tool ID, or exact name. `records` are confirmed by a shared email, phone number, or ID; `possible` are same-name records that are not confirmed and must not be treated as the same person without asking.",
+			inputSchema: z.object({
+				query: z.string().min(1).max(200).describe("Email address, phone number, tool ID, or exact name"),
+			}),
+		},
+		async ({ query }) => {
+			const result = await fetchDaemon<unknown>(baseUrl, `/api/sources/identity?q=${encodeURIComponent(query)}`);
+			if (!result.ok) return errorResult(`Identity lookup failed: ${result.error}`);
+			return textResult(redactCredentialsDeep(result.data));
+		},
+	);
+	registerMcpTool(
+		server,
 		"memory_store",
 		{
 			title: "Store Memory",

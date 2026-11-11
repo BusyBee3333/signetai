@@ -836,6 +836,36 @@ describe("Sources routes", () => {
 		expect(loadSourcesConfig(dir).sources).toHaveLength(0);
 	});
 
+	it("looks one person up across sources and rejects missing or oversized queries", async () => {
+		const { indexExternalMemoryArtifact } = await import("../memory-lineage");
+		for (const [harness, path, phone] of [
+			["stripe", "stripe://sources/stripe:a/customers/cus_ROUTE0001", "(555) 010-7788"],
+			["gohighlevel", "gohighlevel://sources/gohighlevel:b/contacts/routeContact0001", "+15550107788"],
+		] as const) {
+			await indexExternalMemoryArtifact({
+				agentId: "default",
+				harness,
+				sourceId: `${harness}:x`,
+				sourcePath: path,
+				sourceKind: harness === "stripe" ? "source_stripe_customer" : "source_gohighlevel_contact",
+				sourceMtimeMs: 1_767_225_600_000,
+				content: `# Route Person ${harness}\n\n- Phone: ${phone}`,
+			});
+		}
+		const app = makeApp();
+
+		const found = await app.request(`/api/sources/identity?q=${encodeURIComponent("555-010-7788")}`);
+		expect(found.status).toBe(200);
+		const body = (await found.json()) as { records: Array<{ provider: string; match: string }> };
+		expect(body.records.map((record) => `${record.provider}:${record.match}`).sort()).toEqual([
+			"gohighlevel:phone",
+			"stripe:phone",
+		]);
+
+		expect((await app.request("/api/sources/identity")).status).toBe(400);
+		expect((await app.request(`/api/sources/identity?q=${"x".repeat(201)}`)).status).toBe(400);
+	});
+
 	it("connects a Stripe source and queues the shared source index job", async () => {
 		globalThis.fetch = mock(() =>
 			Promise.resolve(Response.json({ object: "list", url: "/v1/customers", has_more: false, data: [] })),

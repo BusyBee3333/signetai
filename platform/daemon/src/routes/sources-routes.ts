@@ -86,6 +86,7 @@ import {
 	sourceModeFor,
 	trackSourceLifecycleWrite,
 } from "../source-lifecycle-telemetry";
+import { IDENTITY_MAX_QUERY_CHARS, lookupIdentity } from "../source-identity";
 import { getSourceProvider } from "../source-providers";
 import {
 	beginSourceDeletion,
@@ -225,6 +226,7 @@ export function registerSourcesRoutes(app: Hono, deps: RegisterSourcesRoutesDeps
 	app.use("/api/sources/obsidian", gate("admin"));
 	app.use("/api/sources/discord", gate("connectors"));
 	app.use("/api/sources/github", gate("connectors"));
+	app.use("/api/sources/identity", gate("recall"));
 	app.use("/api/sources/gmail", gate("connectors"));
 	app.use("/api/sources/gohighlevel", gate("connectors"));
 	app.use("/api/sources/notion", gate("connectors"));
@@ -434,6 +436,19 @@ export function registerSourcesRoutes(app: Hono, deps: RegisterSourcesRoutesDeps
 		const agentId = resolveDaemonAgentId();
 		const stats = await sourceStats(source, agentId);
 		return c.json({ source, stats, health: await sourceHealth(source, agentId, stats) });
+	});
+
+	app.get("/api/sources/identity", async (c) => {
+		const query = (c.req.query("q") ?? "").trim();
+		if (query.length === 0) return c.json({ error: "q is required" }, 400);
+		if (query.length > IDENTITY_MAX_QUERY_CHARS)
+			return c.json({ error: `q must be at most ${IDENTITY_MAX_QUERY_CHARS} characters` }, 400);
+		try {
+			return c.json(await lookupIdentity({ agentId: resolveDaemonAgentId(), query }));
+		} catch (error) {
+			logger.error("system", "Identity lookup failed", error instanceof Error ? error : new Error(String(error)));
+			return c.json({ error: "Identity lookup failed" }, 503);
+		}
 	});
 
 	app.post("/api/sources/:sourceId/snapshot/import", async (c) => {
