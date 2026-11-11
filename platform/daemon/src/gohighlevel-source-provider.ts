@@ -198,11 +198,13 @@ async function syncResource(input: {
 		if (expectedTotal === null) expectedTotal = page.total;
 		let versions: ReadonlyMap<string, IndexedVersion>;
 		try {
-			versions = await readIndexedVersions(
-				source.id,
-				agentId,
-				ARTIFACT_KINDS[resource],
-				page.records.map((record) => recordPath(source, record)),
+			versions = await withOwnerBusyRetry(() =>
+				readIndexedVersions(
+					source.id,
+					agentId,
+					ARTIFACT_KINDS[resource],
+					page.records.map((record) => recordPath(source, record)),
+				),
 			);
 		} catch (err) {
 			stop = { message: `GoHighLevel index state read failed: ${errorMessage(err)}`, haltsSync: true };
@@ -594,4 +596,21 @@ async function resolveToken(tokenRef: string): Promise<string> {
 
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+const OWNER_BUSY_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
+
+/** Retries a database-owner read that was refused or timed out because the owner was busy. Bounded: five retries. */
+async function withOwnerBusyRetry<T>(run: () => Promise<T>): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await run();
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			const busy = message.includes("admission queue is full") || message.includes("exceeded its deadline");
+			const delay = OWNER_BUSY_RETRY_DELAYS_MS[attempt];
+			if (!busy || delay === undefined) throw err;
+			await new Promise((resolve) => setTimeout(resolve, delay));
+		}
+	}
 }
