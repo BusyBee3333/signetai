@@ -609,7 +609,7 @@ describe("sources-config", () => {
 		expect(result.source.providerSettings).toEqual({
 			tokenRef: "GHL_TOKEN",
 			locationId: "LocAbc123456789",
-			resourceTypes: ["contacts", "opportunities"],
+			resourceTypes: ["contacts", "opportunities", "conversations"],
 			maxItemsPerType: 50_000,
 		});
 	});
@@ -658,10 +658,10 @@ describe("sources-config", () => {
 			});
 		}
 		expect(
-			addGoHighLevelSource({ tokenRef: "GHL_TOKEN", locationId, resourceTypes: ["conversations"] }, agentsDir),
+			addGoHighLevelSource({ tokenRef: "GHL_TOKEN", locationId, resourceTypes: ["calendars"] }, agentsDir),
 		).toEqual({
 			ok: false,
-			error: "Invalid GoHighLevel resource types: conversations. Must be one of: contacts, opportunities",
+			error: "Invalid GoHighLevel resource types: calendars. Must be one of: contacts, opportunities, conversations",
 		});
 		for (const maxItemsPerType of [0, 1.5, 500_001]) {
 			expect(addGoHighLevelSource({ tokenRef: "GHL_TOKEN", locationId, maxItemsPerType }, agentsDir).ok).toBe(false);

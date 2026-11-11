@@ -20,6 +20,8 @@ import {
 	type GoHighLevelListPage,
 	type GoHighLevelRecord,
 	GoHighLevelRequestError,
+	type GoHighLevelTranscript,
+	fetchGoHighLevelTranscript,
 	listGoHighLevelPage,
 } from "./gohighlevel-source-fetch";
 
@@ -34,6 +36,7 @@ const PURGE_BATCH = 100;
 const ARTIFACT_KINDS: Readonly<Record<GoHighLevelSourceResourceType, string>> = {
 	contacts: "source_gohighlevel_contact",
 	opportunities: "source_gohighlevel_opportunity",
+	conversations: "source_gohighlevel_conversation",
 };
 
 let syncDeadlineMs = GOHIGHLEVEL_SYNC_DEADLINE_MS;
@@ -43,6 +46,11 @@ export function setGoHighLevelSyncDeadlineForTest(ms: number | null): void {
 }
 
 type StopReason = { readonly message: string; readonly haltsSync: boolean };
+
+interface IndexedVersion {
+	readonly contentHash: string | null;
+	readonly versionKey: string | null;
+}
 
 interface ResourceOutcome {
 	readonly scanned: number;
@@ -145,6 +153,7 @@ async function syncResource(input: {
 	let reachedEnd = false;
 	let stop: StopReason | null = null;
 	let consecutiveRequestFailures = 0;
+	let unfetched = 0;
 
 	while (!reachedEnd && stop === null && scanned < maxItems && context.shouldContinue()) {
 		if (Date.now() > deadline) {
@@ -187,9 +196,9 @@ async function syncResource(input: {
 		unparsed += page.unparsed;
 		enumerated += page.records.length + page.unparsed;
 		if (expectedTotal === null) expectedTotal = page.total;
-		let versions: ReadonlyMap<string, string | null>;
+		let versions: ReadonlyMap<string, IndexedVersion>;
 		try {
-			versions = await readIndexedContentHashes(
+			versions = await readIndexedVersions(
 				source.id,
 				agentId,
 				ARTIFACT_KINDS[resource],
@@ -209,13 +218,55 @@ async function syncResource(input: {
 				indexed: input.indexedBefore + indexed,
 				currentPath: path,
 			});
-			const content = recordContent(record);
+			const stored = versions.get(path);
+			let transcript: GoHighLevelTranscript | null = null;
+			if (resource === "conversations") {
+				if (stored && record.versionKey !== null && stored.versionKey === record.versionKey) {
+					indexed++;
+					scanned++;
+					await yielder();
+					continue;
+				}
+				try {
+					transcript = await fetchGoHighLevelTranscript(token, record.id, () => context.shouldContinue());
+					consecutiveRequestFailures = 0;
+				} catch (err) {
+					if (!context.shouldContinue()) break;
+					const kind = requestOutcome(err);
+					if (kind === "unauthorized") {
+						stop = { message: "GoHighLevel rejected the token", haltsSync: true };
+						break;
+					}
+					if (kind === "forbidden") {
+						stop = {
+							message: `The GoHighLevel token cannot read conversation messages: ${errorMessage(err)}`,
+							haltsSync: false,
+						};
+						break;
+					}
+					unfetched++;
+					if (kind === "transient") {
+						consecutiveRequestFailures++;
+						if (consecutiveRequestFailures >= GOHIGHLEVEL_MAX_CONSECUTIVE_REQUEST_FAILURES) {
+							stop = {
+								message: `Stopped after ${consecutiveRequestFailures} consecutive GoHighLevel request failures: ${errorMessage(err)}`,
+								haltsSync: true,
+							};
+							break;
+						}
+					}
+					scanned++;
+					await yielder();
+					continue;
+				}
+			}
+			const content = recordContent(record, transcript);
 			const hash = contentHash(content);
-			if (versions.get(path) === hash) {
+			if (stored?.contentHash === hash && stored.versionKey === record.versionKey) {
 				indexed++;
 			} else {
 				try {
-					await writeRecordArtifact(source, agentId, record, content, hash);
+					await writeRecordArtifact(source, agentId, record, content, hash, transcript);
 					indexed++;
 				} catch (err) {
 					failures.push(
@@ -234,10 +285,20 @@ async function syncResource(input: {
 			scanned++;
 			await yielder();
 		}
+		if (stop !== null) break;
 		if (page.next === null) reachedEnd = true;
 		else cursor = page.next;
 	}
 
+	if (unfetched > 0 && context.shouldContinue()) {
+		failures.push(
+			failureState(
+				source,
+				`${unfetched} GoHighLevel conversation(s) could not be fetched and will be retried on the next sync`,
+				{ phase: "messages", resource, unfetched },
+			),
+		);
+	}
 	if (unparsed > 0) {
 		failures.push(
 			failureState(source, `Skipped ${unparsed} GoHighLevel ${resource} object(s) with an unexpected shape`, {
@@ -297,6 +358,7 @@ async function writeRecordArtifact(
 	record: GoHighLevelRecord,
 	content: string,
 	hash: string,
+	transcript: GoHighLevelTranscript | null,
 ): Promise<void> {
 	const sourcePath = recordPath(source, record);
 	const sourceParentPath = collectionPath(source, record.resource);
@@ -320,6 +382,15 @@ async function writeRecordArtifact(
 			objectId: record.id,
 			contactId: record.contactId,
 			contentHash: hash,
+			versionKey: record.versionKey,
+			...(transcript
+				? {
+						messages: transcript.messages,
+						olderMessagesOmitted: transcript.olderMessagesOmitted,
+						clipped: transcript.clipped,
+						emailPreviewsOnly: transcript.emailPreviewsOnly,
+					}
+				: {}),
 		},
 	});
 	await indexSourceArtifactStructureAsync({
@@ -334,17 +405,31 @@ async function writeRecordArtifact(
 	});
 }
 
-export function recordContent(record: GoHighLevelRecord): string {
+export function recordContent(record: GoHighLevelRecord, transcript: GoHighLevelTranscript | null = null): string {
 	const lines = [`# ${record.title}`, "", `GoHighLevel ${singular(record.resource)}: ${record.id}`];
 	if (record.fields.length > 0) {
 		lines.push("");
 		for (const entry of record.fields) lines.push(`- ${entry.name}: ${entry.value}`);
 	}
+	if (transcript) {
+		lines.push("", "## Messages", "");
+		lines.push(transcript.text || "No message text.");
+		if (transcript.olderMessagesOmitted) {
+			lines.push(
+				"",
+				`> Signet stored the ${transcript.messages} most recent messages; older messages are not included.`,
+			);
+		}
+		if (transcript.clipped) lines.push("", "> Signet stored the beginning of this transcript only.");
+		if (transcript.emailPreviewsOnly > 0) {
+			lines.push("", `> ${transcript.emailPreviewsOnly} email(s) are shown as the preview GoHighLevel lists.`);
+		}
+	}
 	return lines.join("\n");
 }
 
 function singular(resource: GoHighLevelSourceResourceType): string {
-	return resource === "contacts" ? "contact" : "opportunity";
+	return resource === "contacts" ? "contact" : resource === "opportunities" ? "opportunity" : "conversation";
 }
 
 function recordPath(source: SignetSourceEntry, record: GoHighLevelRecord): string {
@@ -355,17 +440,20 @@ function collectionPath(source: SignetSourceEntry, resource: GoHighLevelSourceRe
 	return `gohighlevel://sources/${source.id}/${resource}`;
 }
 
-async function readIndexedContentHashes(
+async function readIndexedVersions(
 	sourceId: string,
 	agentId: string,
 	sourceKind: string,
 	paths: readonly string[],
-): Promise<ReadonlyMap<string, string | null>> {
-	const hashes = new Map<string, string | null>();
+): Promise<ReadonlyMap<string, IndexedVersion>> {
+	const hashes = new Map<string, IndexedVersion>();
 	if (paths.length === 0) return hashes;
-	const rows = await dbOwnerQuery<Array<{ readonly source_path: string; readonly content_hash: string | null }>>(
+	const rows = await dbOwnerQuery<
+		Array<{ readonly source_path: string; readonly content_hash: string | null; readonly version_key: string | null }>
+	>(
 		{
-			sql: `SELECT source_path, json_extract(source_meta_json, '$.contentHash') AS content_hash
+			sql: `SELECT source_path, json_extract(source_meta_json, '$.contentHash') AS content_hash,
+			        json_extract(source_meta_json, '$.versionKey') AS version_key
 			 FROM memory_artifacts
 			 WHERE agent_id = ? AND source_id = ? AND source_kind = ?
 			   AND COALESCE(is_deleted, 0) = 0
@@ -373,10 +461,13 @@ async function readIndexedContentHashes(
 			params: [agentId, sourceId, sourceKind, ...paths],
 			result: "all",
 		},
-		{ operation: "sources.gohighlevel.read_versions", lane: "read", deadlineMs: 5_000 },
+		{ operation: "sources.gohighlevel.read_versions", lane: "read", deadlineMs: 30_000 },
 	);
 	for (const row of rows) {
-		hashes.set(row.source_path, typeof row.content_hash === "string" ? row.content_hash : null);
+		hashes.set(row.source_path, {
+			contentHash: typeof row.content_hash === "string" ? row.content_hash : null,
+			versionKey: typeof row.version_key === "string" ? row.version_key : null,
+		});
 	}
 	return hashes;
 }
@@ -402,7 +493,7 @@ async function purgeStaleRecords(
 				params: [agentId, source.id, ARTIFACT_KINDS[resource], after, STALE_SCAN_BATCH],
 				result: "all",
 			},
-			{ operation: "sources.gohighlevel.scan_stale", lane: "read", deadlineMs: 5_000 },
+			{ operation: "sources.gohighlevel.scan_stale", lane: "read", deadlineMs: 30_000 },
 		);
 		for (const row of rows) {
 			if (!seenPaths.has(row.source_path)) stale.push({ rowid: row.rowid, sourcePath: row.source_path });
@@ -444,7 +535,7 @@ async function purgeStaleFailureArtifacts(sourceId: string, agentId: string, syn
 				[syncStartedAt, agentId, sourceId, syncStartedAt],
 			),
 		],
-		{ operation: "sources.gohighlevel.purge_failures", lane: "write", deadlineMs: 5_000, estimatedWorkUnits: 1 },
+		{ operation: "sources.gohighlevel.purge_failures", lane: "write", deadlineMs: 30_000, estimatedWorkUnits: 1 },
 	);
 }
 

@@ -823,7 +823,7 @@ describe("Sources routes", () => {
 			{ tokenRef: 42, locationId },
 			{ tokenRef: "GHL_TOKEN", locationId: "bad id" },
 			{ tokenRef: "GHL_TOKEN", locationId, maxItemsPerType: "25" },
-			{ tokenRef: "GHL_TOKEN", locationId, resourceTypes: ["conversations"] },
+			{ tokenRef: "GHL_TOKEN", locationId, resourceTypes: ["calendars"] },
 			{ tokenRef: "pit-0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9", locationId },
 		]) {
 			const res = await makeApp().request("/api/sources/gohighlevel", {

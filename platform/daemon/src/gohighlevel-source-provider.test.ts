@@ -157,7 +157,10 @@ describe("gohighlevel-source-provider", () => {
 	});
 
 	function addSource(input: { resourceTypes?: readonly string[]; maxItemsPerType?: number } = {}): SignetSourceEntry {
-		const added = addGoHighLevelSource({ tokenRef: "GHL_TOKEN", locationId: LOCATION, ...input }, dir);
+		const added = addGoHighLevelSource(
+			{ tokenRef: "GHL_TOKEN", locationId: LOCATION, resourceTypes: ["contacts", "opportunities"], ...input },
+			dir,
+		);
 		if (added.ok === false) throw new Error(added.error);
 		return added.source;
 	}
@@ -360,6 +363,212 @@ describe("gohighlevel-source-provider", () => {
 		expect(requests).toHaveLength(1);
 		expect(result.failures).toEqual([]);
 		expect(allRows(source.id).some((row) => row.source_kind === "source_gohighlevel_failure")).toBe(false);
+	});
+});
+
+describe("gohighlevel-source-provider conversations", () => {
+	let dir = "";
+	let previousSignetPath: string | undefined;
+
+	beforeEach(async () => {
+		dir = mkdtempSync(join(tmpdir(), "signet-gohighlevel-conversations-"));
+		previousSignetPath = process.env.SIGNET_PATH;
+		process.env.SIGNET_PATH = dir;
+		mkdirSync(join(dir, "memory"), { recursive: true });
+		closeDbAccessor();
+		initDbAccessor(join(dir, "memory", "memories.db"));
+		setSecretKeyringAdapterForTests(memoryKeyring());
+		await putSecret("GHL_TOKEN", TOKEN);
+		setGoHighLevelSleepForTest(async () => {});
+	});
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch;
+		setGoHighLevelSleepForTest(null);
+		setSecretKeyringAdapterForTests(null);
+		await closeDbAccessor();
+		if (previousSignetPath === undefined) Reflect.deleteProperty(process.env, "SIGNET_PATH");
+		else process.env.SIGNET_PATH = previousSignetPath;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	function addSource(): SignetSourceEntry {
+		const added = addGoHighLevelSource(
+			{ tokenRef: "GHL_TOKEN", locationId: LOCATION, resourceTypes: ["conversations"] },
+			dir,
+		);
+		if (added.ok === false) throw new Error(added.error);
+		return added.source;
+	}
+
+	async function sync(source: SignetSourceEntry) {
+		const result = await goHighLevelSourceProvider.sync?.({
+			source,
+			agentsDir: dir,
+			agentId: "default",
+			shouldContinue: () => true,
+		});
+		if (!result) throw new Error("GoHighLevel provider has no sync");
+		return result;
+	}
+
+	function conversation(id: string, lastMessageDate: number, extra: Readonly<Record<string, unknown>> = {}) {
+		return {
+			id,
+			contactId: `contact-${id}`,
+			contactName: `Owner ${id}`,
+			phone: "+15550100",
+			type: "TYPE_PHONE",
+			lastMessageType: "TYPE_SMS",
+			lastMessageDirection: "inbound",
+			lastMessageDate,
+			dateUpdated: lastMessageDate,
+			dateAdded: 1_767_225_600_000,
+			sort: [lastMessageDate],
+			...extra,
+		};
+	}
+
+	const thread = [
+		{
+			id: "msg-3",
+			messageType: "TYPE_EMAIL",
+			direction: "outbound",
+			contentType: "text/html",
+			body: "Preview only",
+			dateAdded: "2026-01-03T00:00:00.000Z",
+			meta: { email: { messageIds: ["email-3"], subject: "Your renewal" } },
+		},
+		{
+			id: "msg-2",
+			messageType: "TYPE_SMS",
+			direction: "inbound",
+			status: "delivered",
+			body: "Can I pause next month?",
+			dateAdded: "2026-01-02T00:00:00.000Z",
+			attachments: ["https://files.example/secret-attachment.png"],
+		},
+		{ id: "msg-1", messageType: "TYPE_ACTIVITY_OPPORTUNITY", body: "", dateAdded: "2026-01-01T00:00:00.000Z" },
+	];
+
+	function inbox(pages: readonly (readonly ReturnType<typeof conversation>[])[], total: number): Route {
+		return (request) => {
+			if (request.path === "/conversations/search") {
+				const after = request.query.get("startAfterDate");
+				const index =
+					after === null ? 0 : pages.findIndex((items) => String(items[items.length - 1]?.sort[0]) === after) + 1;
+				return Response.json({ conversations: pages[index] ?? [], total });
+			}
+			if (/^\/conversations\/[^/]+\/messages$/.test(request.path)) {
+				return Response.json({ messages: { lastMessageId: "msg-1", nextPage: false, messages: thread } });
+			}
+			if (request.path === "/conversations/messages/email/email-3") {
+				return Response.json({
+					emailMessage: {
+						id: "email-3",
+						subject: "Your renewal",
+						body: "<p>Hello&nbsp;there,</p><p>Your plan renews on the 1st.</p>",
+					},
+				});
+			}
+			return apiError(404, "Not Found");
+		};
+	}
+
+	it("indexes each conversation with its SMS and full email text in chronological order", async () => {
+		const source = addSource();
+		const requests = stubGoHighLevel(inbox([[conversation("cv1", 1_767_400_000_000)]], 1));
+
+		const result = await sync(source);
+
+		expect(result.failures).toEqual([]);
+		expect(result).toMatchObject({ indexed: 1, scanned: 1 });
+		expect(requests[0]?.query.get("locationId")).toBe(LOCATION);
+		expect(requests.map((request) => request.path)).toEqual([
+			"/conversations/search",
+			"/conversations/cv1/messages",
+			"/conversations/messages/email/email-3",
+			"/conversations/search",
+		]);
+		const [row] = liveRows(source.id);
+		expect(row?.source_kind).toBe("source_gohighlevel_conversation");
+		expect(row?.source_path).toBe(`gohighlevel://sources/${source.id}/conversations/cv1`);
+		const content = row?.content ?? "";
+		expect(content).toContain("# Conversation with Owner cv1");
+		expect(content).toContain("- Contact: contact-cv1");
+		expect(content).toContain("## Messages");
+		expect(content).toContain("### 2026-01-02T00:00:00.000Z · inbound · sms · delivered");
+		expect(content).toContain("Can I pause next month?");
+		expect(content).toContain("Attachments: 1");
+		expect(content).toContain("Subject: Your renewal");
+		expect(content).toContain("Hello there,\nYour plan renews on the 1st.");
+		expect(content).not.toContain("Preview only");
+		expect(content).not.toContain("secret-attachment");
+		expect(content.indexOf("Can I pause")).toBeLessThan(content.indexOf("Your plan renews"));
+		expect(JSON.parse(row?.source_meta_json ?? "{}")).toMatchObject({
+			resource: "conversations",
+			contactId: "contact-cv1",
+			versionKey: "1767400000000:1767400000000",
+			messages: 2,
+			olderMessagesOmitted: false,
+			emailPreviewsOnly: 0,
+		});
+	});
+
+	it("refetches messages only for conversations whose last activity changed", async () => {
+		const source = addSource();
+		stubGoHighLevel(inbox([[conversation("cv2", 1_767_500_000_000), conversation("cv1", 1_767_400_000_000)]], 2));
+		await sync(source);
+
+		const requests = stubGoHighLevel(
+			inbox([[conversation("cv2", 1_767_600_000_000), conversation("cv1", 1_767_400_000_000)]], 2),
+		);
+		const result = await sync(source);
+
+		expect(result.failures).toEqual([]);
+		expect(requests.filter((request) => request.path.endsWith("/messages")).map((request) => request.path)).toEqual([
+			"/conversations/cv2/messages",
+		]);
+	});
+
+	it("follows startAfterDate cursors and purges conversations gone after a complete enumeration", async () => {
+		const source = addSource();
+		const cv3 = conversation("cv3", 1_767_600_000_000);
+		const cv2 = conversation("cv2", 1_767_500_000_000);
+		const cv1 = conversation("cv1", 1_767_400_000_000);
+		const requests = stubGoHighLevel(inbox([[cv3, cv2], [cv1]], 3));
+		await sync(source);
+		expect(
+			requests
+				.filter((request) => request.path === "/conversations/search")
+				.map((request) => request.query.get("startAfterDate")),
+		).toEqual([null, "1767500000000", "1767400000000"]);
+		expect(liveRows(source.id).map((row) => row.source_external_id)).toEqual(["cv1", "cv2", "cv3"]);
+
+		stubGoHighLevel(inbox([[cv3, cv1]], 2));
+		const result = await sync(source);
+
+		expect(result.failures).toEqual([]);
+		expect(liveRows(source.id).map((row) => row.source_external_id)).toEqual(["cv1", "cv3"]);
+	});
+
+	it("reports conversations whose messages could not be fetched and indexes the rest", async () => {
+		const source = addSource();
+		const inner = inbox([[conversation("cv2", 1_767_500_000_000), conversation("cv1", 1_767_400_000_000)]], 2);
+		stubGoHighLevel((request) =>
+			request.path === "/conversations/cv2/messages" ? apiError(503, "Service Unavailable") : inner(request),
+		);
+
+		const result = await sync(source);
+
+		expect(result.failures.map((failure) => failure.message)).toEqual([
+			expect.stringContaining("1 GoHighLevel conversation(s) could not be fetched"),
+		]);
+		expect(
+			liveRows(source.id)
+				.filter((row) => row.source_kind === "source_gohighlevel_conversation")
+				.map((row) => row.source_external_id),
+		).toEqual(["cv1"]);
 	});
 });
 

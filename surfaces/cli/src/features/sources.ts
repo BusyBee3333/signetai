@@ -484,7 +484,7 @@ export async function addGoHighLevelSourceFromCli(
 	console.log(chalk.dim(`  location: ${options.location.trim()}`));
 	console.log(chalk.dim(`  tokenRef: ${options.tokenRef.trim()}`));
 	console.log();
-	console.log(chalk.dim("The daemon indexes the location's contacts and opportunities."));
+	console.log(chalk.dim("The daemon indexes the location's contacts, opportunities, and conversations."));
 	console.log(chalk.dim("Run `signet daemon restart` if the daemon is already running."));
 }
 
