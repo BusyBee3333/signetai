@@ -7,10 +7,13 @@ import { promisify } from "node:util";
 import {
 	LEGACY_OBSIDIAN_CHUNK_SOURCE_TYPE,
 	SOURCE_CHUNK_SOURCE_TYPE,
+	type AddGoHighLevelSourceInput,
 	type AddStripeSourceInput,
 	type SignetSourceEntry,
 	addDiscordSource,
 	addGitHubSource,
+	addGoHighLevelSource,
+	goHighLevelSourceId,
 	addNotionSource,
 	addStripeSource,
 	addObsidianSource,
@@ -219,6 +222,7 @@ export function registerSourcesRoutes(app: Hono, deps: RegisterSourcesRoutesDeps
 	app.use("/api/sources/obsidian", gate("admin"));
 	app.use("/api/sources/discord", gate("connectors"));
 	app.use("/api/sources/github", gate("connectors"));
+	app.use("/api/sources/gohighlevel", gate("connectors"));
 	app.use("/api/sources/notion", gate("connectors"));
 	app.use("/api/sources/stripe", gate("connectors"));
 	app.use("/api/sources/web", gate("connectors"));
@@ -588,6 +592,41 @@ export function registerSourcesRoutes(app: Hono, deps: RegisterSourcesRoutesDeps
 		}
 	});
 
+	app.post("/api/sources/gohighlevel", async (c) => {
+		let parsed: unknown;
+		try {
+			parsed = await c.req.json();
+		} catch {
+			recordSourceConnectionFailure("gohighlevel", "invalid configuration");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+		const body = parseAddGoHighLevelSourceBody(parsed);
+		if ("error" in body) {
+			recordSourceConnectionFailure("gohighlevel", "invalid configuration");
+			return c.json({ error: body.error }, 400);
+		}
+		const releaseSourceMutation = beginSourceMutationLease(c, goHighLevelSourceId(body.locationId));
+		if (typeof releaseSourceMutation !== "function") return releaseSourceMutation;
+		try {
+			const result = addGoHighLevelSource(body, agentsDir);
+			if (result.ok === false) {
+				recordSourceConnectionFailure("gohighlevel", result.error);
+				return c.json({ error: result.error }, 400);
+			}
+			await recordSourceConnected(result.source, resolveDaemonAgentId());
+			const job = enqueueSourceIndexJob({
+				source: result.source,
+				agentsDir,
+				startBridge,
+				purgeNativeSource,
+				recordIndexOperation,
+			});
+			return c.json({ source: result.source, created: result.created, indexed: 0, queued: true, job }, 202);
+		} finally {
+			releaseSourceMutation();
+		}
+	});
+
 	app.post("/api/sources/stripe", async (c) => {
 		let parsed: unknown;
 		try {
@@ -771,6 +810,30 @@ function parseAddNotionSourceBody(
 		tokenRef: body.tokenRef,
 		...(typeof body.name === "string" ? { name: body.name } : {}),
 		...(typeof body.maxPages === "number" ? { maxPages: body.maxPages } : {}),
+	};
+}
+
+function parseAddGoHighLevelSourceBody(value: unknown): AddGoHighLevelSourceInput | { readonly error: string } {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return { error: "Request body must be an object" };
+	const body = value as Record<string, unknown>;
+	if (typeof body.locationId !== "string") return { error: "GoHighLevel locationId is required" };
+	if (typeof body.tokenRef !== "string") return { error: "GoHighLevel tokenRef is required" };
+	if (body.name !== undefined && typeof body.name !== "string") return { error: "GoHighLevel name must be a string" };
+	if (body.maxItemsPerType !== undefined && typeof body.maxItemsPerType !== "number")
+		return { error: "GoHighLevel maxItemsPerType must be a number" };
+	if (
+		body.resourceTypes !== undefined &&
+		!(Array.isArray(body.resourceTypes) && body.resourceTypes.every((type) => typeof type === "string"))
+	)
+		return { error: "GoHighLevel resourceTypes must be an array of strings" };
+	return {
+		tokenRef: body.tokenRef,
+		locationId: body.locationId,
+		...(typeof body.name === "string" ? { name: body.name } : {}),
+		...(Array.isArray(body.resourceTypes)
+			? { resourceTypes: body.resourceTypes.filter((type): type is string => typeof type === "string") }
+			: {}),
+		...(typeof body.maxItemsPerType === "number" ? { maxItemsPerType: body.maxItemsPerType } : {}),
 	};
 }
 

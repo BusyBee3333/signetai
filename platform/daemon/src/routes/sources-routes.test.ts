@@ -8,6 +8,7 @@ import {
 	addObsidianSource,
 	loadSourcesConfig,
 	notionSourceId,
+	goHighLevelSourceId,
 	stripeSourceId,
 	removeSourceIfGeneration,
 } from "@signet/core";
@@ -727,6 +728,67 @@ describe("Sources routes", () => {
 		} finally {
 			releaseDeletion?.();
 		}
+	});
+
+	it("connects a GoHighLevel source and queues the shared source index job", async () => {
+		globalThis.fetch = mock(() =>
+			Promise.resolve(Response.json({ contacts: [], opportunities: [], meta: { total: 0 } })),
+		) as typeof fetch;
+
+		const res = await makeApp().request("/api/sources/gohighlevel", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				tokenRef: "GHL_TOKEN",
+				locationId: "LocAbc123456789",
+				name: "Route CRM",
+				resourceTypes: ["contacts"],
+				maxItemsPerType: 25,
+			}),
+		});
+
+		expect(res.status).toBe(202);
+		const body = (await res.json()) as {
+			source: { id: string; kind: string; name: string; providerSettings?: Record<string, unknown> };
+			queued: boolean;
+		};
+		expect(body.queued).toBe(true);
+		expect(body.source).toMatchObject({
+			kind: "gohighlevel",
+			name: "Route CRM",
+			id: goHighLevelSourceId("LocAbc123456789"),
+		});
+		expect(body.source.providerSettings).toEqual({
+			tokenRef: "GHL_TOKEN",
+			locationId: "LocAbc123456789",
+			resourceTypes: ["contacts"],
+			maxItemsPerType: 25,
+		});
+		expect(loadSourcesConfig(dir).sources.map((source) => source.id)).toEqual([body.source.id]);
+	});
+
+	it("rejects malformed GoHighLevel source bodies before writing config", async () => {
+		const locationId = "LocAbc123456789";
+		for (const payload of [
+			null,
+			[],
+			{},
+			{ tokenRef: "GHL_TOKEN" },
+			{ locationId },
+			{ tokenRef: 42, locationId },
+			{ tokenRef: "GHL_TOKEN", locationId: "bad id" },
+			{ tokenRef: "GHL_TOKEN", locationId, maxItemsPerType: "25" },
+			{ tokenRef: "GHL_TOKEN", locationId, resourceTypes: ["conversations"] },
+			{ tokenRef: "pit-0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9", locationId },
+		]) {
+			const res = await makeApp().request("/api/sources/gohighlevel", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+			expect(res.status).toBe(400);
+		}
+		expect(loadSourcesConfig(dir).sources).toHaveLength(0);
 	});
 
 	it("connects a Stripe source and queues the shared source index job", async () => {

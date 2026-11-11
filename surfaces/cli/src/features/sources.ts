@@ -4,11 +4,13 @@ import {
 	type AddDiscordSourceInput,
 	type AddGitHubSourceInput,
 	type AddNotionSourceInput,
+	type AddGoHighLevelSourceInput,
 	type AddStripeSourceInput,
 	type SignetSourceEntry,
 	addDiscordSource,
 	addGitHubSource,
 	addNotionSource,
+	addGoHighLevelSource,
 	addStripeSource,
 	addObsidianSource,
 	loadSourcesConfig,
@@ -128,6 +130,7 @@ export interface SourcesDeps extends SourceImportDeps {
 	readonly addDiscordSourceToDaemon?: (input: AddDiscordSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addGitHubSourceToDaemon?: (input: AddGitHubSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addNotionSourceToDaemon?: (input: AddNotionSourceInput) => Promise<DaemonAddSourceResult>;
+	readonly addGoHighLevelSourceToDaemon?: (input: AddGoHighLevelSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addStripeSourceToDaemon?: (input: AddStripeSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly removeSourceFromDaemon?: (sourceId: string) => Promise<DaemonRemoveSourceResult>;
 	readonly exportSourceSnapshotFromDaemon?: (
@@ -394,6 +397,53 @@ export async function addNotionSourceFromCli(options: AddNotionSourceOptions, de
 	console.log(chalk.dim("Run `signet daemon restart` if the daemon is already running."));
 }
 
+export interface AddGoHighLevelSourceOptions {
+	readonly location: string;
+	readonly tokenRef: string;
+	readonly name?: string;
+	readonly resource?: readonly string[];
+	readonly maxItems?: string;
+}
+
+export async function addGoHighLevelSourceFromCli(
+	options: AddGoHighLevelSourceOptions,
+	deps: SourcesDeps,
+): Promise<void> {
+	const maxItemsPerType = parseIntegerOption(options.maxItems, "GoHighLevel max-items");
+	if (isParseError(maxItemsPerType)) {
+		console.error(chalk.red(`✗ ${maxItemsPerType.error}`));
+		process.exitCode = 1;
+		return;
+	}
+	const input: AddGoHighLevelSourceInput = {
+		tokenRef: options.tokenRef,
+		locationId: options.location,
+		name: options.name,
+		...(options.resource && options.resource.length > 0 ? { resourceTypes: options.resource } : {}),
+		maxItemsPerType,
+	};
+	const daemonResult = await addSourceThroughDaemon(input, deps.addGoHighLevelSourceToDaemon);
+	if (daemonResult) {
+		const handled = printDaemonAddSourceResult("GoHighLevel", daemonResult);
+		if (handled) return;
+	}
+
+	const result = addGoHighLevelSource(input, deps.agentsDir);
+	if (result.ok === false) {
+		console.error(chalk.red(`✗ ${result.error}`));
+		process.exitCode = 1;
+		return;
+	}
+
+	const verb = result.created ? "Added" : "Updated";
+	console.log(chalk.green(`✓ ${verb} GoHighLevel source: ${result.source.name}`));
+	console.log(chalk.dim(`  location: ${options.location.trim()}`));
+	console.log(chalk.dim(`  tokenRef: ${options.tokenRef.trim()}`));
+	console.log();
+	console.log(chalk.dim("The daemon indexes the location's contacts and opportunities."));
+	console.log(chalk.dim("Run `signet daemon restart` if the daemon is already running."));
+}
+
 export interface AddStripeSourceOptions {
 	readonly tokenRef: string;
 	readonly name?: string;
@@ -465,6 +515,18 @@ export async function listSources(deps: SourcesDeps): Promise<void> {
 			if (repos.length > 0) console.log(chalk.dim(`  repos: ${repos.join(", ")}`));
 			if (typeof source.providerSettings.tokenRef === "string")
 				console.log(chalk.dim(`  tokenRef: ${source.providerSettings.tokenRef}`));
+		}
+		if (source.kind === "gohighlevel" && source.providerSettings) {
+			if (typeof source.providerSettings.locationId === "string")
+				console.log(chalk.dim(`  location: ${source.providerSettings.locationId}`));
+			if (typeof source.providerSettings.tokenRef === "string")
+				console.log(chalk.dim(`  tokenRef: ${source.providerSettings.tokenRef}`));
+			const types = Array.isArray(source.providerSettings.resourceTypes)
+				? source.providerSettings.resourceTypes.filter((entry) => typeof entry === "string")
+				: [];
+			if (types.length > 0) console.log(chalk.dim(`  resources: ${types.join(", ")}`));
+			if (typeof source.providerSettings.maxItemsPerType === "number")
+				console.log(chalk.dim(`  max items per type: ${source.providerSettings.maxItemsPerType}`));
 		}
 		if (source.kind === "stripe" && source.providerSettings) {
 			if (typeof source.providerSettings.tokenRef === "string")
