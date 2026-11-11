@@ -359,17 +359,19 @@ the contact, channel, and last-activity fields followed by a transcript of its
 messages in chronological order: SMS, email, call, and other entries that carry
 text, each with its date, direction, type, and status. The transcript holds the
 300 most recent messages and at most 100,000 characters, and says so when it
-leaves anything out. The full body of the 20 most recent emails in a
+leaves anything out. The full body of the 5 most recent emails in a
 conversation is fetched and reduced to text; older emails keep the preview
-GoHighLevel lists. Attachment links are not stored, only their count. Message
+GoHighLevel lists, because each full email costs one more request. Attachment links are not stored, only their count. Message
 text is stored as written, so anything sent in a conversation becomes
 searchable.
 
 A conversation's messages are fetched again only when its last-message or
 update time changes, so a first sync makes at least one request per
-conversation and later syncs are much lighter. GoHighLevel rate limits are per
-token: a first sync of a large location can take hours and counts against the
-same daily request allowance as anything else using that token.
+conversation and later syncs are much lighter. A first sync of a large location
+takes hours and can span several syncs, each stopping at the three-hour limit
+and the next continuing past the conversations already indexed. GoHighLevel
+rate limits are per token, so this counts against the same daily request
+allowance as anything else using that token.
 
 An object is rewritten only when its rendered content changes. Objects that no
 longer appear are soft-deleted only when the list was followed to an empty page
