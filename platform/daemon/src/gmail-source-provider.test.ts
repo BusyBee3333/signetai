@@ -8,13 +8,13 @@ import { closeDbAccessor, getDbAccessor, initDbAccessor } from "./db-accessor";
 import {
 	GMAIL_MAX_BODY_CHARS,
 	GOOGLE_TOKEN_URL,
-	htmlToText,
 	parseGmailCredentials,
 	parseGmailMessage,
 	setGmailSleepForTest,
 } from "./gmail-source-fetch";
 import { gmailSourceProvider, setGmailSyncDeadlineForTest } from "./gmail-source-provider";
 import { putSecret, setSecretKeyringAdapterForTests } from "./secrets";
+import { htmlToText } from "./source-html-text";
 
 const originalFetch = globalThis.fetch;
 const CLIENT_SECRET = "client-secret-value";

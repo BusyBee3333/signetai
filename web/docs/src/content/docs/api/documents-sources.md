@@ -710,8 +710,8 @@ end.
 ### POST /api/sources/gohighlevel
 
 Add or update a GoHighLevel source and queue a shared source index job. The
-source indexes the contacts and opportunities of one location that the access
-token `tokenRef` resolves to can read. Raw tokens are rejected; pass a Signet
+source indexes the contacts, opportunities, and conversations of one location
+that the access token `tokenRef` resolves to can read. Raw tokens are rejected; pass a Signet
 secret name or external secret reference instead. The source ID is derived from
 `locationId`, so posting the same `locationId` again updates the existing
 source and preserves omitted settings.
@@ -723,13 +723,13 @@ source and preserves omitted settings.
   "tokenRef": "GHL_TOKEN",
   "locationId": "LocAbc123456789",
   "name": "CRM",
-  "resourceTypes": ["contacts", "opportunities"],
+  "resourceTypes": ["contacts", "opportunities", "conversations"],
   "maxItemsPerType": 50000
 }
 ```
 
 `tokenRef` and `locationId` are required. `resourceTypes` is a non-empty array
-drawn from `contacts` and `opportunities` (default both). `maxItemsPerType` is
+drawn from `contacts`, `opportunities`, and `conversations` (default all three). `maxItemsPerType` is
 an integer from 1 to 500000 (default 50000); objects are enumerated newest
 first. Malformed bodies, unknown resource types, and wrongly typed fields return
 `400` without changing source config.
@@ -746,10 +746,11 @@ first. Malformed bodies, unknown resource types, and wrongly typed fields return
 }
 ```
 
-The sync path writes one `source_gohighlevel_contact` or
-`source_gohighlevel_opportunity` artifact per object and
-`source_gohighlevel_failure` artifacts for failed or incomplete enumerations.
-Street addresses, dates of birth, conversations, and message bodies are not
+The sync path writes one `source_gohighlevel_contact`,
+`source_gohighlevel_opportunity`, or `source_gohighlevel_conversation` artifact
+per object and `source_gohighlevel_failure` artifacts for failed or incomplete
+enumerations. A conversation artifact carries a bounded transcript of its
+messages. Street addresses, dates of birth, and attachment links are not
 stored. Objects whose rendered content is unchanged are not rewritten, and
 objects that no longer appear are removed only after a complete enumeration
 that reaches the total GoHighLevel reported.

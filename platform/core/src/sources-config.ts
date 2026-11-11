@@ -167,7 +167,7 @@ export interface AddGmailSourceInput {
 	readonly now?: string;
 }
 
-export type GoHighLevelSourceResourceType = "contacts" | "opportunities";
+export type GoHighLevelSourceResourceType = "contacts" | "opportunities" | "conversations";
 
 export interface GoHighLevelSourceSettings {
 	readonly tokenRef: string;
@@ -236,7 +236,7 @@ const VALID_STRIPE_RESOURCE_TYPES = new Set<string>(DEFAULT_STRIPE_RESOURCE_TYPE
 export const DEFAULT_GMAIL_MAX_MESSAGES = 5_000;
 export const MAX_GMAIL_MAX_MESSAGES = 200_000;
 export const MAX_GMAIL_QUERY_CHARS = 500;
-export const DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES = ["contacts", "opportunities"] as const;
+export const DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES = ["contacts", "opportunities", "conversations"] as const;
 export const DEFAULT_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE = 50_000;
 export const MAX_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE = 500_000;
 const VALID_GOHIGHLEVEL_RESOURCE_TYPES = new Set<string>(DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES);

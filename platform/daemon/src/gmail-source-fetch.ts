@@ -1,3 +1,5 @@
+import { htmlToText } from "./source-html-text";
+
 export const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const GMAIL_MAX_RESPONSE_BYTES = 48 * 1024 * 1024;
@@ -402,24 +404,6 @@ function collectParts(payload: Record<string, unknown>): CollectedParts {
 function decodeBody(data: string): string {
 	if (!data) return "";
 	return Buffer.from(data, "base64url").toString("utf8").replace(/\r\n/g, "\n");
-}
-
-export function htmlToText(html: string): string {
-	return html
-		.replace(/<(script|style|head)\b[\s\S]*?<\/\1>/gi, " ")
-		.replace(/<br\s*\/?>/gi, "\n")
-		.replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote)>/gi, "\n")
-		.replace(/<[^>]+>/g, " ")
-		.replace(/&nbsp;/gi, " ")
-		.replace(/&lt;/gi, "<")
-		.replace(/&gt;/gi, ">")
-		.replace(/&quot;/gi, '"')
-		.replace(/&#39;|&apos;/gi, "'")
-		.replace(/&amp;/gi, "&")
-		.replace(/[ \t]+/g, " ")
-		.replace(/ ?\n ?/g, "\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
 }
 
 function oneLine(value: string): string {

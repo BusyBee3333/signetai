@@ -1,4 +1,5 @@
 import type { GoHighLevelSourceResourceType } from "@signet/core";
+import { htmlToText } from "./source-html-text";
 
 export const GOHIGHLEVEL_API_BASE = "https://services.leadconnectorhq.com";
 export const GOHIGHLEVEL_API_VERSION = "2021-07-28";
@@ -12,6 +13,10 @@ const MAX_RETRY_DELAY_MS = 60_000;
 const MAX_FIELD_VALUE_CHARS = 2_000;
 const MAX_CUSTOM_FIELDS = 25;
 const MAX_TAGS = 50;
+export const GOHIGHLEVEL_MAX_CONVERSATION_MESSAGES = 300;
+export const GOHIGHLEVEL_MAX_FULL_EMAILS_PER_CONVERSATION = 20;
+export const GOHIGHLEVEL_MAX_TRANSCRIPT_CHARS = 100_000;
+const MAX_MESSAGE_BODY_CHARS = 4_000;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 const CANCEL_POLL_MS = 250;
@@ -69,6 +74,15 @@ export interface GoHighLevelRecord {
 	readonly updatedMs: number | null;
 	readonly contactId: string | null;
 	readonly fields: readonly GoHighLevelRecordField[];
+	readonly versionKey: string | null;
+}
+
+export interface GoHighLevelTranscript {
+	readonly text: string;
+	readonly messages: number;
+	readonly olderMessagesOmitted: boolean;
+	readonly clipped: boolean;
+	readonly emailPreviewsOnly: number;
 }
 
 export interface GoHighLevelCursor {
@@ -93,12 +107,19 @@ export async function listGoHighLevelPage(
 ): Promise<GoHighLevelListPage> {
 	const pageSize = Math.max(1, Math.min(GOHIGHLEVEL_PAGE_SIZE, limit));
 	const query = new URLSearchParams({ limit: String(pageSize) });
-	query.set(resource === "contacts" ? "locationId" : "location_id", locationId);
-	if (cursor) {
+	query.set(resource === "opportunities" ? "location_id" : "locationId", locationId);
+	if (cursor && resource === "conversations") {
+		query.set("startAfterDate", String(cursor.startAfter));
+	} else if (cursor) {
 		query.set("startAfter", String(cursor.startAfter));
 		query.set("startAfterId", cursor.startAfterId);
 	}
-	const path = resource === "contacts" ? "/contacts/" : "/opportunities/search";
+	const path =
+		resource === "contacts"
+			? "/contacts/"
+			: resource === "opportunities"
+				? "/opportunities/search"
+				: "/conversations/search";
 	const body = asRecord(await goHighLevelRequest(token, `${path}?${query.toString()}`, shouldContinue));
 	const items = body[resource];
 	if (!Array.isArray(items)) {
@@ -114,6 +135,21 @@ export async function listGoHighLevelPage(
 		const record = parseGoHighLevelRecord(resource, item);
 		if (record) records.push(record);
 		else unparsed++;
+	}
+	if (resource === "conversations") {
+		const total = typeof body.total === "number" && Number.isFinite(body.total) ? body.total : null;
+		if (items.length === 0) return { records, unparsed, total, next: null };
+		const last = asRecord(items[items.length - 1]);
+		const sort = Array.isArray(last.sort) ? last.sort[0] : undefined;
+		const position = typeof sort === "number" ? sort : last.lastMessageDate;
+		if (typeof position !== "number" || !Number.isFinite(position)) {
+			throw new GoHighLevelRequestError("GoHighLevel returned a conversations page with no cursor for the next page", {
+				status: 200,
+				code: "invalid_response",
+				retryable: false,
+			});
+		}
+		return { records, unparsed, total, next: { startAfter: position, startAfterId: "" } };
 	}
 	const meta = asRecord(body.meta);
 	const total = typeof meta.total === "number" && Number.isFinite(meta.total) ? meta.total : null;
@@ -281,6 +317,20 @@ export function parseGoHighLevelRecord(
 			updatedMs: dateMs(record.dateUpdated),
 			contactId: id,
 			fields: contactFields(record),
+			versionKey: null,
+		};
+	}
+	if (resource === "conversations") {
+		const name = text(record.contactName) || text(record.fullName);
+		return {
+			resource,
+			id,
+			title: `Conversation with ${name || text(record.email) || text(record.phone) || id}`,
+			createdMs: dateMs(record.dateAdded),
+			updatedMs: dateMs(record.lastMessageDate) ?? dateMs(record.dateUpdated),
+			contactId: text(record.contactId) || null,
+			fields: conversationFields(record),
+			versionKey: `${String(record.lastMessageDate ?? "")}:${String(record.dateUpdated ?? "")}`,
 		};
 	}
 	return {
@@ -291,7 +341,144 @@ export function parseGoHighLevelRecord(
 		updatedMs: dateMs(record.updatedAt),
 		contactId: text(record.contactId) || null,
 		fields: opportunityFields(record),
+		versionKey: null,
 	};
+}
+
+function conversationFields(record: Record<string, unknown>): GoHighLevelRecordField[] {
+	const tags = stringList(record.tags);
+	return compact([
+		field("Contact", text(record.contactId)),
+		field("Contact name", text(record.contactName) || text(record.fullName)),
+		field("Company", text(record.companyName)),
+		field("Email", text(record.email)),
+		field("Phone", text(record.phone)),
+		field("Channel", typeLabel(record.type)),
+		field("Last message type", typeLabel(record.lastMessageType)),
+		field("Last message direction", text(record.lastMessageDirection)),
+		field("Last message", dateText(record.lastMessageDate)),
+		field("Unread", typeof record.unreadCount === "number" && record.unreadCount > 0 ? String(record.unreadCount) : ""),
+		field("Tags", tags.slice(0, MAX_TAGS).join(", ")),
+	]);
+}
+
+export async function fetchGoHighLevelTranscript(
+	token: string,
+	conversationId: string,
+	shouldContinue: ShouldContinue,
+): Promise<GoHighLevelTranscript> {
+	const collected: Record<string, unknown>[] = [];
+	let lastMessageId: string | null = null;
+	let more = true;
+	while (more && collected.length < GOHIGHLEVEL_MAX_CONVERSATION_MESSAGES && shouldContinue()) {
+		const query = new URLSearchParams({ limit: String(GOHIGHLEVEL_PAGE_SIZE) });
+		if (lastMessageId) query.set("lastMessageId", lastMessageId);
+		const body = asRecord(
+			await goHighLevelRequest(
+				token,
+				`/conversations/${encodeURIComponent(conversationId)}/messages?${query.toString()}`,
+				shouldContinue,
+			),
+		);
+		const page = asRecord(body.messages);
+		if (!Array.isArray(page.messages)) {
+			throw new GoHighLevelRequestError("GoHighLevel messages response has no messages array", {
+				status: 200,
+				code: "invalid_response",
+				retryable: false,
+			});
+		}
+		for (const item of page.messages) collected.push(asRecord(item));
+		const cursor = text(page.lastMessageId);
+		more = page.nextPage === true && page.messages.length > 0 && cursor.length > 0 && cursor !== lastMessageId;
+		lastMessageId = cursor || lastMessageId;
+	}
+	const kept = collected.slice(0, GOHIGHLEVEL_MAX_CONVERSATION_MESSAGES);
+	const lines: string[] = [];
+	let fullEmails = 0;
+	let emailPreviewsOnly = 0;
+	for (const message of kept) {
+		if (!shouldContinue()) throw cancelledRequest();
+		const email = asRecord(asRecord(message.meta).email);
+		let body = text(message.body);
+		let subject = text(email.subject);
+		const emailId = stringList(email.messageIds)[0];
+		if (typeLabel(message.messageType) === "EMAIL" && emailId) {
+			if (fullEmails < GOHIGHLEVEL_MAX_FULL_EMAILS_PER_CONVERSATION) {
+				fullEmails++;
+				const full = await fetchFullEmail(token, emailId, shouldContinue);
+				if (full) {
+					body = full.body;
+					subject = full.subject || subject;
+				} else emailPreviewsOnly++;
+			} else emailPreviewsOnly++;
+		}
+		const rendered = renderBody(body, text(message.contentType));
+		if (!rendered && !subject) continue;
+		const attachments = Array.isArray(message.attachments) ? message.attachments.length : 0;
+		const header = [
+			dateText(message.dateAdded) || "undated",
+			text(message.direction) || "activity",
+			typeLabel(message.messageType).toLowerCase() || "message",
+			text(message.status),
+		]
+			.filter(Boolean)
+			.join(" · ");
+		lines.push(
+			[
+				`### ${header}`,
+				subject ? `Subject: ${clip(subject.replace(/\s+/g, " ").trim(), 300)}` : "",
+				attachments > 0 ? `Attachments: ${attachments}` : "",
+				clip(rendered, MAX_MESSAGE_BODY_CHARS),
+			]
+				.filter(Boolean)
+				.join("\n"),
+		);
+	}
+	const full = lines.reverse().join("\n\n");
+	return {
+		text: full.slice(0, GOHIGHLEVEL_MAX_TRANSCRIPT_CHARS),
+		messages: lines.length,
+		olderMessagesOmitted: more || collected.length > kept.length,
+		clipped: full.length > GOHIGHLEVEL_MAX_TRANSCRIPT_CHARS,
+		emailPreviewsOnly,
+	};
+}
+
+async function fetchFullEmail(
+	token: string,
+	emailMessageId: string,
+	shouldContinue: ShouldContinue,
+): Promise<{ readonly subject: string; readonly body: string } | null> {
+	try {
+		const body = asRecord(
+			await goHighLevelRequest(
+				token,
+				`/conversations/messages/email/${encodeURIComponent(emailMessageId)}`,
+				shouldContinue,
+			),
+		);
+		const email = asRecord(body.emailMessage);
+		const content = text(email.body);
+		return content ? { subject: text(email.subject), body: content } : null;
+	} catch (err) {
+		if (err instanceof GoHighLevelRequestError && (err.status === 404 || err.status === 400 || err.status === 422)) {
+			return null;
+		}
+		throw err;
+	}
+}
+
+function renderBody(body: string, contentType: string): string {
+	const looksLikeHtml =
+		contentType.toLowerCase().includes("html") || /<\/?(html|body|div|p|br|table|span|a)\b/i.test(body);
+	return (looksLikeHtml ? htmlToText(body) : body.replace(/\r\n/g, "\n")).trim();
+}
+
+function typeLabel(value: unknown): string {
+	return text(value)
+		.replace(/^TYPE_/, "")
+		.replace(/_/g, " ");
 }
 
 function contactFields(record: Record<string, unknown>): GoHighLevelRecordField[] {

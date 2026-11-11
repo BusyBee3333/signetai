@@ -322,8 +322,8 @@ source job to report failure until resolved.
 
 ## GoHighLevel v1
 
-GoHighLevel Sources v1 indexes the contacts and opportunities of one
-GoHighLevel location (sub-account) as read-only Markdown source artifacts. The
+GoHighLevel Sources v1 indexes the contacts, opportunities, and conversations of
+one GoHighLevel location (sub-account) as read-only Markdown source artifacts. The
 Dashboard does not offer GoHighLevel yet; add it through the CLI or the
 [GoHighLevel source API](/api/documents-sources/#post-api-sources-gohighlevel).
 
@@ -336,22 +336,40 @@ signet sources remove gohighlevel:...
 ```
 
 Store a location-scoped access token, such as a private integration token with
-read access to contacts and opportunities, in Signet Secrets and pass its name
+read access to contacts, opportunities, conversations, and conversation
+messages, in Signet Secrets and pass its name
 as `--token-ref`; raw tokens are rejected. The source ID is derived from the
 location ID, so adding the same `--location` again updates the existing source,
 preserves omitted settings, and lets you rotate `--token-ref`.
 
 Each sync lists the selected resource types newest first through
-`GET /contacts/` and `GET /opportunities/search`, 100 objects per request, with
-API version header `2021-07-28` and an explicit `User-Agent`. `--resource`
-selects `contacts` or `opportunities` (default both). `--max-items` caps the
+`GET /contacts/`, `GET /opportunities/search`, and `GET /conversations/search`,
+100 objects per request, with API version header `2021-07-28` and an explicit
+`User-Agent`. `--resource` selects `contacts`, `opportunities`, or
+`conversations` (default all three). `--max-items` caps the
 objects indexed per resource type (default 50,000, maximum 500,000).
 
-Each object becomes one `source_gohighlevel_contact` or
+Each contact or opportunity becomes one `source_gohighlevel_contact` or
 `source_gohighlevel_opportunity` artifact holding names, company, email, phone,
 tags, status, value, pipeline and stage identifiers, dates, and custom field
 values keyed by field ID. Street addresses and dates of birth are not stored.
-Conversations and message bodies are not indexed in v1.
+
+Each conversation becomes one `source_gohighlevel_conversation` artifact with
+the contact, channel, and last-activity fields followed by a transcript of its
+messages in chronological order: SMS, email, call, and other entries that carry
+text, each with its date, direction, type, and status. The transcript holds the
+300 most recent messages and at most 100,000 characters, and says so when it
+leaves anything out. The full body of the 20 most recent emails in a
+conversation is fetched and reduced to text; older emails keep the preview
+GoHighLevel lists. Attachment links are not stored, only their count. Message
+text is stored as written, so anything sent in a conversation becomes
+searchable.
+
+A conversation's messages are fetched again only when its last-message or
+update time changes, so a first sync makes at least one request per
+conversation and later syncs are much lighter. GoHighLevel rate limits are per
+token: a first sync of a large location can take hours and counts against the
+same daily request allowance as anything else using that token.
 
 An object is rewritten only when its rendered content changes. Objects that no
 longer appear are soft-deleted only when the list was followed to an empty page

@@ -422,11 +422,13 @@ export function registerSourcesCommands(program: Command, deps: RegisterSourcesC
 
 	add
 		.command("gohighlevel")
-		.description("Index GoHighLevel contacts and opportunities for one location as read-only recall sources")
+		.description(
+			"Index GoHighLevel contacts, opportunities, and conversations for one location as read-only recall sources",
+		)
 		.requiredOption("--location <id>", "GoHighLevel location (sub-account) ID")
 		.requiredOption("--token-ref <secret>", "Signet secret name or external secret reference for the access token")
 		.option("--name <name>", "Display name for the GoHighLevel source")
-		.option("--resource <type>", "Resource type: contacts or opportunities (repeatable)", collect, [])
+		.option("--resource <type>", "Resource type: contacts, opportunities, or conversations (repeatable)", collect, [])
 		.option("--max-items <count>", "Maximum objects to index per resource type, newest first")
 		.action((options) =>
 			addGoHighLevelSourceFromCli(options, {
