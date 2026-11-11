@@ -375,6 +375,64 @@ describe("sources CLI commands", () => {
 		expect(process.exitCode).not.toBe(1);
 	});
 
+	it("wires Stripe source adds through the daemon so the initial index job is queued", async () => {
+		const calls: Array<{ method: string; path: string; body: unknown; timeoutMs?: number }> = [];
+		const program = new Command();
+		program.exitOverride();
+		registerSourcesCommands(program, {
+			agentsDir: dir,
+			secretApiCall: async (method, path, body, timeoutMs) => {
+				calls.push({ method, path, body, timeoutMs });
+				return {
+					ok: true,
+					data: {
+						created: true,
+						queued: true,
+						source: {
+							id: "stripe:abc",
+							kind: "stripe",
+							name: "Stripe CLI",
+							root: "stripe://accounts/STRIPE_KEY",
+							enabled: true,
+							mode: "read-only",
+							createdAt: "2026-11-10T00:00:00.000Z",
+							updatedAt: "2026-11-10T00:00:00.000Z",
+							providerSettings: { tokenRef: "STRIPE_KEY", resourceTypes: ["customers"], maxItemsPerType: 75 },
+						},
+						job: { id: "source-index:stripe:abc:1" },
+					},
+				};
+			},
+		});
+
+		await program.parseAsync([
+			"node",
+			"test",
+			"sources",
+			"add",
+			"stripe",
+			"--token-ref",
+			"STRIPE_KEY",
+			"--resource",
+			"customers",
+			"--max-items",
+			"75",
+			"--name",
+			"Stripe CLI",
+		]);
+
+		expect(calls).toEqual([
+			{
+				method: "POST",
+				path: "/api/sources/stripe",
+				timeoutMs: 30_000,
+				body: { tokenRef: "STRIPE_KEY", name: "Stripe CLI", resourceTypes: ["customers"], maxItemsPerType: 75 },
+			},
+		]);
+		expect(loadSourcesConfig(dir).sources).toHaveLength(0);
+		expect(process.exitCode).not.toBe(1);
+	});
+
 	it("falls back to local GitHub source config when the daemon is unreachable", async () => {
 		const calls: Array<{ method: string; path: string }> = [];
 		const program = new Command();

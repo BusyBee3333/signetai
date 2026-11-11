@@ -8,6 +8,7 @@ import {
 	addObsidianSource,
 	loadSourcesConfig,
 	notionSourceId,
+	stripeSourceId,
 	removeSourceIfGeneration,
 } from "@signet/core";
 import { Hono } from "hono";
@@ -720,6 +721,76 @@ describe("Sources routes", () => {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ tokenRef: "  NOTION_TOKEN  " }),
+			});
+			expect(res.status).toBe(409);
+			expect(loadSourcesConfig(dir).sources).toHaveLength(0);
+		} finally {
+			releaseDeletion?.();
+		}
+	});
+
+	it("connects a Stripe source and queues the shared source index job", async () => {
+		globalThis.fetch = mock(() =>
+			Promise.resolve(Response.json({ object: "list", url: "/v1/customers", has_more: false, data: [] })),
+		) as typeof fetch;
+
+		const res = await makeApp().request("/api/sources/stripe", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				tokenRef: "STRIPE_KEY",
+				name: "Route Stripe",
+				resourceTypes: ["customers"],
+				maxItemsPerType: 25,
+			}),
+		});
+
+		expect(res.status).toBe(202);
+		const body = (await res.json()) as {
+			source: { id: string; kind: string; name: string; providerSettings?: Record<string, unknown> };
+			queued: boolean;
+		};
+		expect(body.queued).toBe(true);
+		expect(body.source).toMatchObject({ kind: "stripe", name: "Route Stripe", id: stripeSourceId("STRIPE_KEY") });
+		expect(body.source.providerSettings).toEqual({
+			tokenRef: "STRIPE_KEY",
+			resourceTypes: ["customers"],
+			maxItemsPerType: 25,
+		});
+		expect(loadSourcesConfig(dir).sources.map((source) => source.id)).toEqual([body.source.id]);
+	});
+
+	it("rejects malformed Stripe source bodies before writing config", async () => {
+		for (const payload of [
+			null,
+			[],
+			{},
+			{ tokenRef: 42 },
+			{ tokenRef: "STRIPE_KEY", name: ["x"] },
+			{ tokenRef: "STRIPE_KEY", maxItemsPerType: "25" },
+			{ tokenRef: "STRIPE_KEY", maxItemsPerType: 0 },
+			{ tokenRef: "STRIPE_KEY", resourceTypes: "customers" },
+			{ tokenRef: "STRIPE_KEY", resourceTypes: ["payouts"] },
+			{ tokenRef: `sk_live_${"a".repeat(24)}` },
+		]) {
+			const res = await makeApp().request("/api/sources/stripe", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+			expect(res.status).toBe(400);
+		}
+		expect(loadSourcesConfig(dir).sources).toHaveLength(0);
+	});
+
+	it("returns 409 for a Stripe source whose mutation lease is held", async () => {
+		const releaseDeletion = beginSourceDeletion(stripeSourceId("STRIPE_KEY"));
+		expect(releaseDeletion).toBeTypeOf("function");
+		try {
+			const res = await makeApp().request("/api/sources/stripe", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ tokenRef: "  STRIPE_KEY  " }),
 			});
 			expect(res.status).toBe(409);
 			expect(loadSourcesConfig(dir).sources).toHaveLength(0);
