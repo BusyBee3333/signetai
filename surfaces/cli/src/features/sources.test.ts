@@ -7,6 +7,7 @@ import {
 	addDiscordSourceFromCli,
 	addGitHubSourceFromCli,
 	addNotionSourceFromCli,
+	addStripeSourceFromCli,
 	addObsidianVaultSource,
 	exportConfiguredSourceSnapshot,
 	importConfiguredSourceSnapshot,
@@ -141,6 +142,23 @@ describe("sources CLI features", () => {
 		expect(source?.providerSettings?.repos).toEqual(["Signet-AI/signetai"]);
 		expect(source?.providerSettings?.resourceTypes).toEqual(["issues", "docs"]);
 		expect(logs.join("\n")).toContain("Added GitHub source: GitHub CLI");
+		expect(process.exitCode).not.toBe(1);
+	});
+
+	it("adds a Stripe source from CLI options", async () => {
+		await addStripeSourceFromCli(
+			{ tokenRef: "STRIPE_KEY", name: "Stripe CLI", resource: ["invoices", "customers"], maxItems: "40" },
+			{ agentsDir: dir },
+		);
+
+		const [source] = loadSourcesConfig(dir).sources;
+		expect(source?.kind).toBe("stripe");
+		expect(source?.providerSettings).toEqual({
+			tokenRef: "STRIPE_KEY",
+			resourceTypes: ["customers", "invoices"],
+			maxItemsPerType: 40,
+		});
+		expect(logs.join("\n")).toContain("Added Stripe source: Stripe CLI");
 		expect(process.exitCode).not.toBe(1);
 	});
 

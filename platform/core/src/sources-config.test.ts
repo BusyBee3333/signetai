@@ -12,6 +12,7 @@ import {
 	addGitHubSource,
 	addImportedSource,
 	addNotionSource,
+	addStripeSource,
 	addObsidianSource,
 	addWebSource,
 	deterministicImportedSourceId,
@@ -22,8 +23,10 @@ import {
 	parseDiscordSettings,
 	parseGitHubSettings,
 	parseNotionSettings,
+	parseStripeSettings,
 	parseWebSettings,
 	notionSourceId,
+	stripeSourceId,
 	removeSource,
 	removeSourceIfGeneration,
 } from "./sources-config";
@@ -526,6 +529,73 @@ describe("sources-config", () => {
 		expect(second.source.name).toBe("Renamed");
 		expect(parseNotionSettings(second.source.providerSettings)).toEqual({ tokenRef: "NOTION_TOKEN", maxPages: 25 });
 		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(1);
+	});
+
+	it("adds a Stripe source keyed by its key reference with default resources", () => {
+		const agentsDir = tmp();
+
+		const result = addStripeSource(
+			{ tokenRef: " STRIPE_KEY ", name: "Billing", now: "2026-01-02T00:00:00.000Z" },
+			agentsDir,
+		);
+
+		expect(result.ok).toBe(true);
+		if (result.ok === false) throw new Error(result.error);
+		expect(result.source.kind).toBe("stripe");
+		expect(result.source.mode).toBe("read-only");
+		expect(result.source.id).toBe(stripeSourceId("STRIPE_KEY"));
+		expect(result.source.root).toBe("stripe://accounts/STRIPE_KEY");
+		expect(result.source.providerSettings).toEqual({
+			tokenRef: "STRIPE_KEY",
+			resourceTypes: ["customers", "subscriptions", "invoices", "charges"],
+			maxItemsPerType: 5_000,
+		});
+	});
+
+	it("preserves Stripe settings on partial update and normalizes resource order", () => {
+		const agentsDir = tmp();
+		addStripeSource(
+			{ tokenRef: "STRIPE_KEY", resourceTypes: ["charges", "customers", "charges"], maxItemsPerType: 25 },
+			agentsDir,
+		);
+		const second = addStripeSource({ tokenRef: "STRIPE_KEY", name: "Renamed" }, agentsDir);
+
+		expect(second.ok).toBe(true);
+		if (second.ok === false) throw new Error(second.error);
+		expect(second.created).toBe(false);
+		expect(second.source.name).toBe("Renamed");
+		expect(parseStripeSettings(second.source.providerSettings)).toEqual({
+			tokenRef: "STRIPE_KEY",
+			resourceTypes: ["customers", "charges"],
+			maxItemsPerType: 25,
+		});
+		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(1);
+	});
+
+	it("rejects invalid Stripe source boundaries", () => {
+		const agentsDir = tmp();
+
+		expect(addStripeSource({ tokenRef: "  " }, agentsDir)).toEqual({ ok: false, error: "Stripe tokenRef is required" });
+		for (const tokenRef of [
+			`sk_live_${"a".repeat(24)}`,
+			`rk_test_${"b".repeat(24)}`,
+			`Bearer sk_test_${"c".repeat(24)}`,
+			"Authorization: Bearer STRIPE_KEY",
+		]) {
+			expect(addStripeSource({ tokenRef }, agentsDir)).toEqual({
+				ok: false,
+				error: "Stripe tokenRef must be a secret reference, not a raw API key",
+			});
+		}
+		expect(addStripeSource({ tokenRef: "STRIPE_KEY", resourceTypes: [] }, agentsDir).ok).toBe(false);
+		expect(addStripeSource({ tokenRef: "STRIPE_KEY", resourceTypes: ["payouts"] }, agentsDir)).toEqual({
+			ok: false,
+			error: "Invalid Stripe resource types: payouts. Must be one of: customers, subscriptions, invoices, charges",
+		});
+		for (const maxItemsPerType of [0, 1.5, 100_001]) {
+			expect(addStripeSource({ tokenRef: "STRIPE_KEY", maxItemsPerType }, agentsDir).ok).toBe(false);
+		}
+		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(0);
 	});
 
 	it("rejects invalid Notion source boundaries", () => {

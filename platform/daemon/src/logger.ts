@@ -14,6 +14,7 @@ export type LogCategory =
 	| "git"
 	| "github-source"
 	| "notion-source"
+	| "stripe-source"
 	| "watcher"
 	| "embedding"
 	| "harness"

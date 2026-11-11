@@ -414,6 +414,7 @@ function indexesSnapshotArtifactGraph(artifact: SourceSnapshotArtifact): boolean
 		"source_discord_failure",
 		"source_github_failure",
 		"source_notion_failure",
+		"source_stripe_failure",
 	].includes(artifact.sourceKind);
 }
 

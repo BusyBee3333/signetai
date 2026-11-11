@@ -5,7 +5,7 @@ description: "Connect read-only knowledge bases like Obsidian vaults directly in
 
 Sources are external knowledge bases that Signet can read, index, and recall from without turning them into ordinary saved memories.
 
-Sources currently support **Web pages**, **Obsidian** vaults, **Discord** guilds, **GitHub** repositories, and **Notion** workspaces. Add a public Web page URL and Signet fetches it through the dedicated web provider, uses Defuddle to extract readable Markdown and page metadata, then stores the result as source-backed evidence. Point Signet at an Obsidian vault and the daemon mounts that vault as a read-only knowledge base: Markdown files become searchable artifacts, the vault structure becomes graph topology, and heading-aware chunks participate in semantic recall. Add Discord with a bot-token secret reference and Signet indexes guild topology, channels, threads, members, message windows, and Discord metadata through the same source-owned artifact lifecycle. Add GitHub repositories to index issues, pull requests, discussions, selected Markdown docs, comments, and source failure artifacts through the shared source provider pipeline. Add Notion with an internal-integration token secret reference and Signet indexes every page shared with that integration, including database entries, as Markdown source artifacts.
+Sources currently support **Web pages**, **Obsidian** vaults, **Discord** guilds, **GitHub** repositories, **Notion** workspaces, and **Stripe** accounts. Add a public Web page URL and Signet fetches it through the dedicated web provider, uses Defuddle to extract readable Markdown and page metadata, then stores the result as source-backed evidence. Point Signet at an Obsidian vault and the daemon mounts that vault as a read-only knowledge base: Markdown files become searchable artifacts, the vault structure becomes graph topology, and heading-aware chunks participate in semantic recall. Add Discord with a bot-token secret reference and Signet indexes guild topology, channels, threads, members, message windows, and Discord metadata through the same source-owned artifact lifecycle. Add GitHub repositories to index issues, pull requests, discussions, selected Markdown docs, comments, and source failure artifacts through the shared source provider pipeline. Add Notion with an internal-integration token secret reference and Signet indexes every page shared with that integration, including database entries, as Markdown source artifacts.
 
 The important rule is simple: **the source stays canonical**. Signet reads from the vault. It does not edit notes, rewrite frontmatter, create files, or move anything inside the source directory.
 
@@ -274,6 +274,57 @@ Pages removed from
 the index are soft-deleted and their content is retained until the source
 itself is removed.
 
+## Stripe v1
+
+Stripe Sources v1 indexes the customers, subscriptions, invoices, and charges of
+one Stripe account as read-only Markdown source artifacts. The Dashboard does
+not offer Stripe yet; add it through the CLI or the
+[Stripe source API](/api/documents-sources/#post-api-sources-stripe).
+
+```bash
+signet secret put STRIPE_KEY
+signet sources add stripe --token-ref STRIPE_KEY --name "Billing"
+signet sources add stripe --token-ref STRIPE_KEY --resource customers --resource invoices
+signet sources add stripe --token-ref STRIPE_KEY --max-items 20000
+signet sources list
+signet sources remove stripe:...
+```
+
+Store the API key in Signet Secrets and pass its name as `--token-ref`; raw
+keys are rejected. The source only issues `GET` list requests, so a
+[restricted key](https://docs.stripe.com/keys#limit-access) with read access to
+the selected resources is enough and is the recommended setup. The source ID is
+derived from the token reference, so adding the same `--token-ref` again updates
+the existing source and preserves omitted settings.
+
+Each sync lists the selected resource types newest first through Stripe's list
+endpoints, 100 objects per request, pinned to API version `2026-09-30.endive`.
+`--resource` selects `customers`, `subscriptions`, `invoices`, or `charges`
+(default all four); subscriptions are listed in every status. `--max-items`
+caps the objects indexed per resource type (default 5,000, maximum 100,000).
+
+Each object becomes one artifact (`source_stripe_customer`,
+`source_stripe_subscription`, `source_stripe_invoice`, or
+`source_stripe_charge`) holding its identifiers, status, dates, amounts, and
+metadata. Signet never stores card numbers, bank account numbers, card brand,
+last four digits, expiry, or fingerprints, and it omits hosted invoice and
+receipt links because they grant access without signing in. A charge records
+only its payment method type, such as `card`. Object metadata is stored as
+written, so anything your integration puts in Stripe metadata becomes
+searchable. Artifacts of a resource type you later deselect are kept until the
+source is removed.
+
+Stripe objects carry no modification time, so an object is rewritten only when
+its rendered content changes. Objects that no longer appear are soft-deleted
+after a resource type is enumerated to the end; a capped, failed, cancelled, or
+partially unparsed enumeration removes nothing. Failed requests are retried with
+bounded backoff and honor `Retry-After`. A resource type the key cannot read is
+reported and the remaining types still sync. The sync stops and reports what it
+did not attempt when Stripe rejects the key, after five consecutive transient
+request failures, or after three hours. Failures are written as
+`source_stripe_failure` artifacts and cause the shared source job to report
+failure until resolved.
+
 ## Operations diagnostics
 
 The sources API and dashboard expose source health diagnostics for operational
@@ -455,6 +506,7 @@ The daemon exposes the Sources lifecycle under `/api/sources`:
 | `POST` | `/api/sources/discord` | Add/update a Discord source and queue a shared source index job. |
 | `POST` | `/api/sources/github` | Add/update a GitHub source and queue a shared source index job. |
 | `POST` | `/api/sources/notion` | Add/update a Notion source and queue a shared source index job. |
+| `POST` | `/api/sources/stripe` | Add/update a Stripe source and queue a shared source index job. |
 | `POST` | `/api/sources/web` | Add/update a public Web page source and queue a shared source index job. |
 | `GET` | `/api/sources/:sourceId/health` | Inspect source health diagnostics used by the dashboard. |
 | `GET` | `/api/sources/:sourceId/snapshot` | Export source-owned artifacts as a Signet source snapshot. |
@@ -469,7 +521,7 @@ The desktop shell uses native folder selection through IPC. The daemon picker ro
 - Discord gateway tailing depends on a bot token with the required gateway
   intents and keeps a source job open while it is connected.
 - Sources are local/operator-managed. Permissions and RBAC are intentionally out of scope for v1.
-- Signet does not write back to Obsidian, Discord, GitHub, or Notion.
+- Signet does not write back to Obsidian, Discord, GitHub, Notion, or Stripe.
 - Rename handling is delete + add.
 - Non-Markdown Obsidian attachments are not indexed by the Obsidian v1 source path.
 - Discord attachment binary/media extraction is disabled by default; opt-in text attachment extraction only fetches bounded text-like uploads.

@@ -4,10 +4,12 @@ import {
 	type AddDiscordSourceInput,
 	type AddGitHubSourceInput,
 	type AddNotionSourceInput,
+	type AddStripeSourceInput,
 	type SignetSourceEntry,
 	addDiscordSource,
 	addGitHubSource,
 	addNotionSource,
+	addStripeSource,
 	addObsidianSource,
 	loadSourcesConfig,
 	removeSource,
@@ -126,6 +128,7 @@ export interface SourcesDeps extends SourceImportDeps {
 	readonly addDiscordSourceToDaemon?: (input: AddDiscordSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addGitHubSourceToDaemon?: (input: AddGitHubSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly addNotionSourceToDaemon?: (input: AddNotionSourceInput) => Promise<DaemonAddSourceResult>;
+	readonly addStripeSourceToDaemon?: (input: AddStripeSourceInput) => Promise<DaemonAddSourceResult>;
 	readonly removeSourceFromDaemon?: (sourceId: string) => Promise<DaemonRemoveSourceResult>;
 	readonly exportSourceSnapshotFromDaemon?: (
 		sourceId: string,
@@ -391,6 +394,47 @@ export async function addNotionSourceFromCli(options: AddNotionSourceOptions, de
 	console.log(chalk.dim("Run `signet daemon restart` if the daemon is already running."));
 }
 
+export interface AddStripeSourceOptions {
+	readonly tokenRef: string;
+	readonly name?: string;
+	readonly resource?: readonly string[];
+	readonly maxItems?: string;
+}
+
+export async function addStripeSourceFromCli(options: AddStripeSourceOptions, deps: SourcesDeps): Promise<void> {
+	const maxItemsPerType = parseIntegerOption(options.maxItems, "Stripe max-items");
+	if (isParseError(maxItemsPerType)) {
+		console.error(chalk.red(`✗ ${maxItemsPerType.error}`));
+		process.exitCode = 1;
+		return;
+	}
+	const input: AddStripeSourceInput = {
+		tokenRef: options.tokenRef,
+		name: options.name,
+		...(options.resource && options.resource.length > 0 ? { resourceTypes: options.resource } : {}),
+		maxItemsPerType,
+	};
+	const daemonResult = await addSourceThroughDaemon(input, deps.addStripeSourceToDaemon);
+	if (daemonResult) {
+		const handled = printDaemonAddSourceResult("Stripe", daemonResult);
+		if (handled) return;
+	}
+
+	const result = addStripeSource(input, deps.agentsDir);
+	if (result.ok === false) {
+		console.error(chalk.red(`✗ ${result.error}`));
+		process.exitCode = 1;
+		return;
+	}
+
+	const verb = result.created ? "Added" : "Updated";
+	console.log(chalk.green(`✓ ${verb} Stripe source: ${result.source.name}`));
+	console.log(chalk.dim(`  tokenRef: ${options.tokenRef.trim()}`));
+	console.log();
+	console.log(chalk.dim("The daemon indexes the selected Stripe objects; card and bank numbers are never stored."));
+	console.log(chalk.dim("Run `signet daemon restart` if the daemon is already running."));
+}
+
 export async function listSources(deps: SourcesDeps): Promise<void> {
 	const config = loadSourcesConfig(deps.agentsDir);
 	if (config.sources.length === 0) {
@@ -421,6 +465,16 @@ export async function listSources(deps: SourcesDeps): Promise<void> {
 			if (repos.length > 0) console.log(chalk.dim(`  repos: ${repos.join(", ")}`));
 			if (typeof source.providerSettings.tokenRef === "string")
 				console.log(chalk.dim(`  tokenRef: ${source.providerSettings.tokenRef}`));
+		}
+		if (source.kind === "stripe" && source.providerSettings) {
+			if (typeof source.providerSettings.tokenRef === "string")
+				console.log(chalk.dim(`  tokenRef: ${source.providerSettings.tokenRef}`));
+			const types = Array.isArray(source.providerSettings.resourceTypes)
+				? source.providerSettings.resourceTypes.filter((entry) => typeof entry === "string")
+				: [];
+			if (types.length > 0) console.log(chalk.dim(`  resources: ${types.join(", ")}`));
+			if (typeof source.providerSettings.maxItemsPerType === "number")
+				console.log(chalk.dim(`  max items per type: ${source.providerSettings.maxItemsPerType}`));
 		}
 		if (source.kind === "notion" && source.providerSettings) {
 			if (typeof source.providerSettings.tokenRef === "string")

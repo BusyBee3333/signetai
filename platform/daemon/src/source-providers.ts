@@ -2,6 +2,7 @@ import type { SignetSourceEntry, SignetSourceKind, SourceFailureState } from "@s
 import { discordSourceProvider } from "./discord-source-provider";
 import { githubSourceProvider } from "./github-source-provider";
 import { notionSourceProvider } from "./notion-source-provider";
+import { stripeSourceProvider } from "./stripe-source-provider";
 import { webSourceProvider } from "./web-source-provider";
 import { markImportedSourceUnsupported } from "./imported-source-lifecycle";
 import {
@@ -69,6 +70,7 @@ export function getSourceProvider(kind: SignetSourceKind): SourceProviderAdapter
 	if (kind === discordSourceProvider.kind) return discordSourceProvider;
 	if (kind === githubSourceProvider.kind) return githubSourceProvider;
 	if (kind === notionSourceProvider.kind) return notionSourceProvider;
+	if (kind === stripeSourceProvider.kind) return stripeSourceProvider;
 	if (kind === webSourceProvider.kind) return webSourceProvider;
 	if (kind === importedSourceProvider.kind) return importedSourceProvider;
 	return additionalProviders.get(kind);
@@ -80,6 +82,7 @@ export function configuredSourceProviders(): readonly SourceProviderAdapter[] {
 		discordSourceProvider,
 		githubSourceProvider,
 		notionSourceProvider,
+		stripeSourceProvider,
 		webSourceProvider,
 		importedSourceProvider,
 		...additionalProviders.values(),

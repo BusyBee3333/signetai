@@ -176,6 +176,7 @@ describe("source route authorization in team mode", () => {
 			["POST", "/api/sources/discord"],
 			["POST", "/api/sources/github"],
 			["POST", "/api/sources/notion"],
+			["POST", "/api/sources/stripe"],
 			["POST", "/api/sources/web"],
 			["POST", "/api/sources/obsidian:abc/snapshot/import"],
 			["DELETE", "/api/sources/obsidian:abc"],

@@ -7,10 +7,12 @@ import { promisify } from "node:util";
 import {
 	LEGACY_OBSIDIAN_CHUNK_SOURCE_TYPE,
 	SOURCE_CHUNK_SOURCE_TYPE,
+	type AddStripeSourceInput,
 	type SignetSourceEntry,
 	addDiscordSource,
 	addGitHubSource,
 	addNotionSource,
+	addStripeSource,
 	addObsidianSource,
 	addWebSource,
 	DEFAULT_DISCORD_DESKTOP_CACHE_PATH,
@@ -18,6 +20,7 @@ import {
 	markSourceIndexed,
 	normalizePublicWebUrl,
 	notionSourceId,
+	stripeSourceId,
 	parseDiscordSettings,
 	parseGitHubSettings,
 	removeSourceIfGeneration,
@@ -217,6 +220,7 @@ export function registerSourcesRoutes(app: Hono, deps: RegisterSourcesRoutesDeps
 	app.use("/api/sources/discord", gate("connectors"));
 	app.use("/api/sources/github", gate("connectors"));
 	app.use("/api/sources/notion", gate("connectors"));
+	app.use("/api/sources/stripe", gate("connectors"));
 	app.use("/api/sources/web", gate("connectors"));
 	app.use("/api/sources/:sourceId/snapshot", gate("connectors"));
 	app.use("/api/sources/:sourceId/snapshot/import", gate("connectors"));
@@ -584,6 +588,41 @@ export function registerSourcesRoutes(app: Hono, deps: RegisterSourcesRoutesDeps
 		}
 	});
 
+	app.post("/api/sources/stripe", async (c) => {
+		let parsed: unknown;
+		try {
+			parsed = await c.req.json();
+		} catch {
+			recordSourceConnectionFailure("stripe", "invalid configuration");
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+		const body = parseAddStripeSourceBody(parsed);
+		if ("error" in body) {
+			recordSourceConnectionFailure("stripe", "invalid configuration");
+			return c.json({ error: body.error }, 400);
+		}
+		const releaseSourceMutation = beginSourceMutationLease(c, stripeSourceId(body.tokenRef));
+		if (typeof releaseSourceMutation !== "function") return releaseSourceMutation;
+		try {
+			const result = addStripeSource(body, agentsDir);
+			if (result.ok === false) {
+				recordSourceConnectionFailure("stripe", result.error);
+				return c.json({ error: result.error }, 400);
+			}
+			await recordSourceConnected(result.source, resolveDaemonAgentId());
+			const job = enqueueSourceIndexJob({
+				source: result.source,
+				agentsDir,
+				startBridge,
+				purgeNativeSource,
+				recordIndexOperation,
+			});
+			return c.json({ source: result.source, created: result.created, indexed: 0, queued: true, job }, 202);
+		} finally {
+			releaseSourceMutation();
+		}
+	});
+
 	app.post("/api/sources/web", async (c) => {
 		let body: AddWebSourceBody = {};
 		try {
@@ -732,6 +771,28 @@ function parseAddNotionSourceBody(
 		tokenRef: body.tokenRef,
 		...(typeof body.name === "string" ? { name: body.name } : {}),
 		...(typeof body.maxPages === "number" ? { maxPages: body.maxPages } : {}),
+	};
+}
+
+function parseAddStripeSourceBody(value: unknown): AddStripeSourceInput | { readonly error: string } {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return { error: "Request body must be an object" };
+	const body = value as Record<string, unknown>;
+	if (typeof body.tokenRef !== "string") return { error: "Stripe tokenRef is required" };
+	if (body.name !== undefined && typeof body.name !== "string") return { error: "Stripe name must be a string" };
+	if (body.maxItemsPerType !== undefined && typeof body.maxItemsPerType !== "number")
+		return { error: "Stripe maxItemsPerType must be a number" };
+	if (
+		body.resourceTypes !== undefined &&
+		!(Array.isArray(body.resourceTypes) && body.resourceTypes.every((type) => typeof type === "string"))
+	)
+		return { error: "Stripe resourceTypes must be an array of strings" };
+	return {
+		tokenRef: body.tokenRef,
+		...(typeof body.name === "string" ? { name: body.name } : {}),
+		...(Array.isArray(body.resourceTypes)
+			? { resourceTypes: body.resourceTypes.filter((type): type is string => typeof type === "string") }
+			: {}),
+		...(typeof body.maxItemsPerType === "number" ? { maxItemsPerType: body.maxItemsPerType } : {}),
 	};
 }
 

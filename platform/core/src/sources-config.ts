@@ -137,6 +137,22 @@ export interface AddNotionSourceInput {
 	readonly now?: string;
 }
 
+export type StripeSourceResourceType = "customers" | "subscriptions" | "invoices" | "charges";
+
+export interface StripeSourceSettings {
+	readonly tokenRef: string;
+	readonly resourceTypes: readonly StripeSourceResourceType[];
+	readonly maxItemsPerType: number;
+}
+
+export interface AddStripeSourceInput {
+	readonly tokenRef: string;
+	readonly name?: string;
+	readonly resourceTypes?: readonly string[];
+	readonly maxItemsPerType?: number;
+	readonly now?: string;
+}
+
 export type ImportedSourceDuplicateMode = "skip" | "replace" | "reimport";
 
 export interface AddImportedSourceInput {
@@ -181,6 +197,10 @@ export const MAX_GITHUB_MAX_ITEMS_PER_REPO = 10_000;
 const VALID_GITHUB_RESOURCE_TYPES = new Set<string>(DEFAULT_GITHUB_RESOURCE_TYPES);
 export const DEFAULT_NOTION_MAX_PAGES = 500;
 export const MAX_NOTION_MAX_PAGES = 10_000;
+export const DEFAULT_STRIPE_RESOURCE_TYPES = ["customers", "subscriptions", "invoices", "charges"] as const;
+export const DEFAULT_STRIPE_MAX_ITEMS_PER_TYPE = 5_000;
+export const MAX_STRIPE_MAX_ITEMS_PER_TYPE = 100_000;
+const VALID_STRIPE_RESOURCE_TYPES = new Set<string>(DEFAULT_STRIPE_RESOURCE_TYPES);
 
 export function getAgentsDir(): string {
 	return resolveDefaultBasePath();
@@ -253,6 +273,14 @@ export function addNotionSource(input: AddNotionSourceInput, agentsDir = getAgen
 
 export function notionSourceId(tokenRef: string): string {
 	return `notion:${createHash("sha256").update(tokenRef.trim()).digest("hex").slice(0, 16)}`;
+}
+
+export function addStripeSource(input: AddStripeSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	return withSourcesConfigLock(agentsDir, () => addStripeSourceUnlocked(input, agentsDir));
+}
+
+export function stripeSourceId(tokenRef: string): string {
+	return `stripe:${createHash("sha256").update(tokenRef.trim()).digest("hex").slice(0, 16)}`;
 }
 
 function addWebSourceUnlocked(input: AddWebSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
@@ -542,6 +570,74 @@ function addNotionSourceChecked(input: AddNotionSourceInput, agentsDir = getAgen
 	return { ok: true, source, created: true };
 }
 
+function addStripeSourceUnlocked(input: AddStripeSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	try {
+		return addStripeSourceChecked(input, agentsDir);
+	} catch (err) {
+		const detail = err instanceof Error ? err.message : String(err);
+		return { ok: false, error: detail };
+	}
+}
+
+function addStripeSourceChecked(input: AddStripeSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	const now = input.now ?? new Date().toISOString();
+	const cfg = loadSourcesConfigForWrite(agentsDir);
+	const tokenRef = typeof input.tokenRef === "string" ? input.tokenRef.trim() : "";
+	const sourceId = stripeSourceId(tokenRef);
+	const existing = cfg.sources.find((source) => source.id === sourceId);
+	const settings = buildStripeSettings(input, existing ? parseStripeSettings(existing.providerSettings) : undefined);
+	if ("error" in settings) return { ok: false, error: settings.error };
+	const root = `stripe://accounts/${settings.tokenRef}`;
+	if (existing) {
+		const updated: SignetSourceEntry = {
+			...existing,
+			name: cleanName(input.name) ?? existing.name,
+			root,
+			enabled: true,
+			providerSettings: stripeSettingsProviderSettings(settings),
+			generation: newSourceGeneration(),
+			updatedAt: now,
+		};
+		saveSourcesConfig(
+			{
+				version: SOURCES_CONFIG_VERSION,
+				sources: cfg.sources.map((source) => (source.id === existing.id ? updated : source)),
+			},
+			agentsDir,
+		);
+		return { ok: true, source: updated, created: false };
+	}
+
+	const source: SignetSourceEntry = {
+		id: sourceId,
+		generation: newSourceGeneration(),
+		kind: "stripe",
+		name: cleanName(input.name) ?? "Stripe",
+		root,
+		enabled: true,
+		mode: "read-only",
+		createdAt: now,
+		updatedAt: now,
+		providerSettings: stripeSettingsProviderSettings(settings),
+	};
+	saveSourcesConfig({ version: SOURCES_CONFIG_VERSION, sources: [...cfg.sources, source] }, agentsDir);
+	return { ok: true, source, created: true };
+}
+
+export function parseStripeSettings(raw?: SignetSourceProviderSettings): StripeSourceSettings {
+	const tokenRef = typeof raw?.tokenRef === "string" ? raw.tokenRef.trim() : "";
+	if (!tokenRef) throw new Error("Stripe source has no tokenRef");
+	const resourceTypes = Array.isArray(raw?.resourceTypes)
+		? uniqueStripeResourceTypes(raw.resourceTypes.filter(isStripeResourceType))
+		: [];
+	return {
+		tokenRef,
+		resourceTypes: resourceTypes.length > 0 ? resourceTypes : [...DEFAULT_STRIPE_RESOURCE_TYPES],
+		maxItemsPerType:
+			cleanPositiveInteger(raw?.maxItemsPerType, MAX_STRIPE_MAX_ITEMS_PER_TYPE) ?? DEFAULT_STRIPE_MAX_ITEMS_PER_TYPE,
+	};
+}
+
 export function parseNotionSettings(raw?: SignetSourceProviderSettings): NotionSourceSettings {
 	const tokenRef = typeof raw?.tokenRef === "string" ? raw.tokenRef.trim() : "";
 	if (!tokenRef) throw new Error("Notion source has no tokenRef");
@@ -767,6 +863,52 @@ function buildNotionSettings(
 
 function notionSettingsProviderSettings(settings: NotionSourceSettings): SignetSourceProviderSettings {
 	return { tokenRef: settings.tokenRef, maxPages: settings.maxPages };
+}
+
+function buildStripeSettings(
+	input: AddStripeSourceInput,
+	existing?: StripeSourceSettings,
+): StripeSourceSettings | { readonly error: string } {
+	const tokenRef = typeof input.tokenRef === "string" ? input.tokenRef.trim() : "";
+	if (!tokenRef) return { error: "Stripe tokenRef is required" };
+	if (looksLikeRawStripeKey(tokenRef))
+		return { error: "Stripe tokenRef must be a secret reference, not a raw API key" };
+	if (input.resourceTypes !== undefined) {
+		if (!Array.isArray(input.resourceTypes) || input.resourceTypes.length === 0) {
+			return { error: "Stripe resourceTypes must include at least one resource type" };
+		}
+		const invalid = input.resourceTypes.filter((type) => !isStripeResourceType(type));
+		if (invalid.length > 0) {
+			return {
+				error: `Invalid Stripe resource types: ${invalid.join(", ")}. Must be one of: ${[...DEFAULT_STRIPE_RESOURCE_TYPES].join(", ")}`,
+			};
+		}
+	}
+	if (
+		input.maxItemsPerType !== undefined &&
+		cleanPositiveInteger(input.maxItemsPerType, MAX_STRIPE_MAX_ITEMS_PER_TYPE) !== input.maxItemsPerType
+	) {
+		return { error: `Stripe maxItemsPerType must be an integer between 1 and ${MAX_STRIPE_MAX_ITEMS_PER_TYPE}` };
+	}
+	return {
+		tokenRef,
+		resourceTypes: input.resourceTypes
+			? uniqueStripeResourceTypes(input.resourceTypes)
+			: (existing?.resourceTypes ?? [...DEFAULT_STRIPE_RESOURCE_TYPES]),
+		maxItemsPerType: input.maxItemsPerType ?? existing?.maxItemsPerType ?? DEFAULT_STRIPE_MAX_ITEMS_PER_TYPE,
+	};
+}
+
+function stripeSettingsProviderSettings(settings: StripeSourceSettings): SignetSourceProviderSettings {
+	return {
+		tokenRef: settings.tokenRef,
+		resourceTypes: settings.resourceTypes,
+		maxItemsPerType: settings.maxItemsPerType,
+	};
+}
+
+function uniqueStripeResourceTypes(types: readonly string[]): StripeSourceResourceType[] {
+	return DEFAULT_STRIPE_RESOURCE_TYPES.filter((type) => types.includes(type));
 }
 
 function discordSettingsProviderSettings(settings: DiscordSourceSettings): SignetSourceProviderSettings {
@@ -1227,6 +1369,18 @@ function looksLikeRawNotionToken(value: string): boolean {
 	const withoutAuthScheme = withoutHeaderPrefix.replace(/^bearer\s+/i, "").trim();
 	if (withoutAuthScheme !== trimmed) return true;
 	return /^(ntn|secret)_[A-Za-z0-9]{20,}$/.test(withoutAuthScheme);
+}
+
+function looksLikeRawStripeKey(value: string): boolean {
+	const trimmed = value.trim();
+	const withoutHeaderPrefix = trimmed.replace(/^authorization:\s*/i, "").trim();
+	const withoutAuthScheme = withoutHeaderPrefix.replace(/^(bearer|basic)\s+/i, "").trim();
+	if (withoutAuthScheme !== trimmed) return true;
+	return /^(sk|rk)_(live|test)_[A-Za-z0-9]{10,}$/.test(withoutAuthScheme);
+}
+
+function isStripeResourceType(value: unknown): value is StripeSourceResourceType {
+	return typeof value === "string" && VALID_STRIPE_RESOURCE_TYPES.has(value);
 }
 
 function cleanPositiveInteger(value: unknown, max: number): number | undefined {

@@ -8,6 +8,7 @@ import {
 	addDiscordSourceFromCli,
 	addGitHubSourceFromCli,
 	addNotionSourceFromCli,
+	addStripeSourceFromCli,
 	addObsidianVaultSource,
 	exportConfiguredSourceSnapshot,
 	importConfiguredSourceSnapshot,
@@ -394,6 +395,27 @@ export function registerSourcesCommands(program: Command, deps: RegisterSourcesC
 				...deps,
 				addNotionSourceToDaemon: deps.secretApiCall
 					? (input) => addSourceThroughDaemon(deps.secretApiCall, "/api/sources/notion", input)
+					: undefined,
+			}),
+		);
+
+	add
+		.command("stripe")
+		.description("Index Stripe customers, subscriptions, invoices, and charges as read-only recall sources")
+		.requiredOption("--token-ref <secret>", "Signet secret name or external secret reference for the Stripe API key")
+		.option("--name <name>", "Display name for the Stripe source")
+		.option(
+			"--resource <type>",
+			"Resource type: customers, subscriptions, invoices, or charges (repeatable)",
+			collect,
+			[],
+		)
+		.option("--max-items <count>", "Maximum objects to index per resource type, newest first")
+		.action((options) =>
+			addStripeSourceFromCli(options, {
+				...deps,
+				addStripeSourceToDaemon: deps.secretApiCall
+					? (input) => addSourceThroughDaemon(deps.secretApiCall, "/api/sources/stripe", input)
 					: undefined,
 			}),
 		);
