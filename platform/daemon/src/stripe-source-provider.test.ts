@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { type SignetSourceEntry, addStripeSource } from "@signet/core";
 import type { SecretKeyringAdapter } from "@signet/core";
 import { closeDbAccessor, getDbAccessor, initDbAccessor } from "./db-accessor";
+import { loadMemoryConfig } from "./memory-config";
+import { hybridRecall } from "./memory-search";
 import { putSecret, setSecretKeyringAdapterForTests } from "./secrets";
 import { STRIPE_API_VERSION, money, parseStripeRecord, setStripeSleepForTest } from "./stripe-source-fetch";
 import { setStripeSyncDeadlineForTest, stripeSourceProvider } from "./stripe-source-provider";
@@ -250,6 +252,32 @@ describe("stripe-source-provider", () => {
 			customerId: "cus_1",
 			livemode: true,
 		});
+	});
+
+	it("makes indexed objects available to recall with their source path", async () => {
+		const source = addSource();
+		stubStripe(fullAccount([customer("cus_1", { name: "Ironworks Barbell Club" })]));
+		await sync(source);
+		const raw = loadMemoryConfig(dir);
+		const cfg = { ...raw, search: { ...raw.search, rehearsal_enabled: false, min_score: 0 } };
+
+		const byName = await hybridRecall(
+			{ query: "Ironworks Barbell Club", keywordQuery: "Ironworks Barbell", limit: 10, agentId: "default" },
+			cfg,
+			async () => null,
+		);
+		const byFailure = await hybridRecall(
+			{ query: "card_declined charge", keywordQuery: "card_declined", limit: 10, agentId: "default" },
+			cfg,
+			async () => null,
+		);
+
+		expect(byName.results.map((result) => result.source_path)).toContain(
+			`stripe://sources/${source.id}/customers/cus_1`,
+		);
+		expect(byFailure.results.map((result) => result.source_path)).toContain(
+			`stripe://sources/${source.id}/charges/ch_1`,
+		);
 	});
 
 	it("never stores the API key, card details, or bearer payment links", async () => {
