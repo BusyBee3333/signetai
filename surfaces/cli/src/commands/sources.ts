@@ -8,6 +8,7 @@ import {
 	addDiscordSourceFromCli,
 	addGitHubSourceFromCli,
 	addNotionSourceFromCli,
+	addGoHighLevelSourceFromCli,
 	addStripeSourceFromCli,
 	addObsidianVaultSource,
 	exportConfiguredSourceSnapshot,
@@ -395,6 +396,23 @@ export function registerSourcesCommands(program: Command, deps: RegisterSourcesC
 				...deps,
 				addNotionSourceToDaemon: deps.secretApiCall
 					? (input) => addSourceThroughDaemon(deps.secretApiCall, "/api/sources/notion", input)
+					: undefined,
+			}),
+		);
+
+	add
+		.command("gohighlevel")
+		.description("Index GoHighLevel contacts and opportunities for one location as read-only recall sources")
+		.requiredOption("--location <id>", "GoHighLevel location (sub-account) ID")
+		.requiredOption("--token-ref <secret>", "Signet secret name or external secret reference for the access token")
+		.option("--name <name>", "Display name for the GoHighLevel source")
+		.option("--resource <type>", "Resource type: contacts or opportunities (repeatable)", collect, [])
+		.option("--max-items <count>", "Maximum objects to index per resource type, newest first")
+		.action((options) =>
+			addGoHighLevelSourceFromCli(options, {
+				...deps,
+				addGoHighLevelSourceToDaemon: deps.secretApiCall
+					? (input) => addSourceThroughDaemon(deps.secretApiCall, "/api/sources/gohighlevel", input)
 					: undefined,
 			}),
 		);

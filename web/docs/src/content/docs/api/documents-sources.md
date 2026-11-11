@@ -138,13 +138,13 @@ number of chunk links on the document.
 
 Sources connect read-only external knowledge bases to Signet recall without
 turning them into ordinary saved memories. Supported source kinds are
-`obsidian`, `discord`, `github`, `notion`, `stripe`, `web`, and `import`.
+`obsidian`, `discord`, `github`, `gohighlevel`, `notion`, `stripe`, `web`, and `import`.
 
 In `team` and `hybrid` mode, permissions apply as follows:
 
 - `POST /api/sources/import` requires `documents`. Its `paths` field requires `admin`.
 - Routes that read or browse the daemon host require `admin`: `POST /api/sources/obsidian`, `POST /api/sources/pick-files`, `POST /api/sources/pick-directory`, and `POST /api/sources/discord` with `syncMode: "desktop-cache"` or `desktopCachePath`.
-- Other source changes require `connectors`: `POST /api/sources/discord`, `github`, `notion`, `stripe`, and `web`, `POST /api/sources/:sourceId/snapshot/import`, and `DELETE /api/sources/:sourceId`.
+- Other source changes require `connectors`: `POST /api/sources/discord`, `github`, `gohighlevel`, `notion`, `stripe`, and `web`, `POST /api/sources/:sourceId/snapshot/import`, and `DELETE /api/sources/:sourceId`.
 - `GET /api/sources/:sourceId/snapshot` requires `connectors`.
 
 In every auth mode, the daemon refuses an import path or folder root that is inside its own runtime, secrets, database, or transcript directories. It also refuses a folder root that contains one of them. For Obsidian sources, which never index hidden directories, a root is allowed when the private directory is below a hidden directory, so a vault rooted at `~` still works with the workspace at `~/.agents`. Paths are compared after `~` expansion and symlink resolution, and the request returns `400`.
@@ -661,6 +661,53 @@ that could not be retrieved, and unconfirmed removals. Blocks the API cannot
 render become `[Unsupported Notion block: <type>]` placeholders. Pages whose edit minute has not changed since a completed
 fetch are not refetched, and pages no longer shared are removed after a complete
 enumeration once Notion confirms they are gone.
+
+### POST /api/sources/gohighlevel
+
+Add or update a GoHighLevel source and queue a shared source index job. The
+source indexes the contacts and opportunities of one location that the access
+token `tokenRef` resolves to can read. Raw tokens are rejected; pass a Signet
+secret name or external secret reference instead. The source ID is derived from
+`locationId`, so posting the same `locationId` again updates the existing
+source and preserves omitted settings.
+
+**Request body**
+
+```json
+{
+  "tokenRef": "GHL_TOKEN",
+  "locationId": "LocAbc123456789",
+  "name": "CRM",
+  "resourceTypes": ["contacts", "opportunities"],
+  "maxItemsPerType": 50000
+}
+```
+
+`tokenRef` and `locationId` are required. `resourceTypes` is a non-empty array
+drawn from `contacts` and `opportunities` (default both). `maxItemsPerType` is
+an integer from 1 to 500000 (default 50000); objects are enumerated newest
+first. Malformed bodies, unknown resource types, and wrongly typed fields return
+`400` without changing source config.
+
+**Response**
+
+```json
+{
+  "source": { "id": "gohighlevel:abc123", "kind": "gohighlevel" },
+  "created": true,
+  "indexed": 0,
+  "queued": true,
+  "job": { "status": "queued", "sourceId": "gohighlevel:abc123" }
+}
+```
+
+The sync path writes one `source_gohighlevel_contact` or
+`source_gohighlevel_opportunity` artifact per object and
+`source_gohighlevel_failure` artifacts for failed or incomplete enumerations.
+Street addresses, dates of birth, conversations, and message bodies are not
+stored. Objects whose rendered content is unchanged are not rewritten, and
+objects that no longer appear are removed only after a complete enumeration
+that reaches the total GoHighLevel reported.
 
 ### POST /api/sources/stripe
 

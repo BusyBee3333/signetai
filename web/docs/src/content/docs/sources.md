@@ -5,7 +5,7 @@ description: "Connect read-only knowledge bases like Obsidian vaults directly in
 
 Sources are external knowledge bases that Signet can read, index, and recall from without turning them into ordinary saved memories.
 
-Sources currently support **Web pages**, **Obsidian** vaults, **Discord** guilds, **GitHub** repositories, **Notion** workspaces, and **Stripe** accounts. Add a public Web page URL and Signet fetches it through the dedicated web provider, uses Defuddle to extract readable Markdown and page metadata, then stores the result as source-backed evidence. Point Signet at an Obsidian vault and the daemon mounts that vault as a read-only knowledge base: Markdown files become searchable artifacts, the vault structure becomes graph topology, and heading-aware chunks participate in semantic recall. Add Discord with a bot-token secret reference and Signet indexes guild topology, channels, threads, members, message windows, and Discord metadata through the same source-owned artifact lifecycle. Add GitHub repositories to index issues, pull requests, discussions, selected Markdown docs, comments, and source failure artifacts through the shared source provider pipeline. Add Notion with an internal-integration token secret reference and Signet indexes every page shared with that integration, including database entries, as Markdown source artifacts.
+Sources currently support **Web pages**, **Obsidian** vaults, **Discord** guilds, **GitHub** repositories, **Notion** workspaces, **Stripe** accounts, and **GoHighLevel** locations. Add a public Web page URL and Signet fetches it through the dedicated web provider, uses Defuddle to extract readable Markdown and page metadata, then stores the result as source-backed evidence. Point Signet at an Obsidian vault and the daemon mounts that vault as a read-only knowledge base: Markdown files become searchable artifacts, the vault structure becomes graph topology, and heading-aware chunks participate in semantic recall. Add Discord with a bot-token secret reference and Signet indexes guild topology, channels, threads, members, message windows, and Discord metadata through the same source-owned artifact lifecycle. Add GitHub repositories to index issues, pull requests, discussions, selected Markdown docs, comments, and source failure artifacts through the shared source provider pipeline. Add Notion with an internal-integration token secret reference and Signet indexes every page shared with that integration, including database entries, as Markdown source artifacts.
 
 The important rule is simple: **the source stays canonical**. Signet reads from the vault. It does not edit notes, rewrite frontmatter, create files, or move anything inside the source directory.
 
@@ -274,6 +274,49 @@ Pages removed from
 the index are soft-deleted and their content is retained until the source
 itself is removed.
 
+## GoHighLevel v1
+
+GoHighLevel Sources v1 indexes the contacts and opportunities of one
+GoHighLevel location (sub-account) as read-only Markdown source artifacts. The
+Dashboard does not offer GoHighLevel yet; add it through the CLI or the
+[GoHighLevel source API](/api/documents-sources/#post-api-sources-gohighlevel).
+
+```bash
+signet secret put GHL_TOKEN
+signet sources add gohighlevel --location <locationId> --token-ref GHL_TOKEN --name "CRM"
+signet sources add gohighlevel --location <locationId> --token-ref GHL_TOKEN --resource contacts
+signet sources list
+signet sources remove gohighlevel:...
+```
+
+Store a location-scoped access token, such as a private integration token with
+read access to contacts and opportunities, in Signet Secrets and pass its name
+as `--token-ref`; raw tokens are rejected. The source ID is derived from the
+location ID, so adding the same `--location` again updates the existing source,
+preserves omitted settings, and lets you rotate `--token-ref`.
+
+Each sync lists the selected resource types newest first through
+`GET /contacts/` and `GET /opportunities/search`, 100 objects per request, with
+API version header `2021-07-28` and an explicit `User-Agent`. `--resource`
+selects `contacts` or `opportunities` (default both). `--max-items` caps the
+objects indexed per resource type (default 50,000, maximum 500,000).
+
+Each object becomes one `source_gohighlevel_contact` or
+`source_gohighlevel_opportunity` artifact holding names, company, email, phone,
+tags, status, value, pipeline and stage identifiers, dates, and custom field
+values keyed by field ID. Street addresses and dates of birth are not stored.
+Conversations and message bodies are not indexed in v1.
+
+An object is rewritten only when its rendered content changes. Objects that no
+longer appear are soft-deleted only when the list was followed to an empty page
+and the number of objects enumerated is at least the total GoHighLevel reported;
+a capped, failed, cancelled, or short enumeration removes nothing. Failed
+requests are retried with bounded backoff and honor `Retry-After`. The sync
+stops and reports what it did not attempt when GoHighLevel rejects the token,
+after five consecutive transient request failures, or after three hours.
+Failures are written as `source_gohighlevel_failure` artifacts and cause the
+shared source job to report failure until resolved.
+
 ## Stripe v1
 
 Stripe Sources v1 indexes the customers, subscriptions, invoices, and charges of
@@ -505,6 +548,7 @@ The daemon exposes the Sources lifecycle under `/api/sources`:
 | `POST` | `/api/sources/obsidian` | Add/update an Obsidian vault source and index it. |
 | `POST` | `/api/sources/discord` | Add/update a Discord source and queue a shared source index job. |
 | `POST` | `/api/sources/github` | Add/update a GitHub source and queue a shared source index job. |
+| `POST` | `/api/sources/gohighlevel` | Add/update a GoHighLevel source and queue a shared source index job. |
 | `POST` | `/api/sources/notion` | Add/update a Notion source and queue a shared source index job. |
 | `POST` | `/api/sources/stripe` | Add/update a Stripe source and queue a shared source index job. |
 | `POST` | `/api/sources/web` | Add/update a public Web page source and queue a shared source index job. |
@@ -521,7 +565,7 @@ The desktop shell uses native folder selection through IPC. The daemon picker ro
 - Discord gateway tailing depends on a bot token with the required gateway
   intents and keeps a source job open while it is connected.
 - Sources are local/operator-managed. Permissions and RBAC are intentionally out of scope for v1.
-- Signet does not write back to Obsidian, Discord, GitHub, Notion, or Stripe.
+- Signet does not write back to Obsidian, Discord, GitHub, Notion, Stripe, or GoHighLevel.
 - Rename handling is delete + add.
 - Non-Markdown Obsidian attachments are not indexed by the Obsidian v1 source path.
 - Discord attachment binary/media extraction is disabled by default; opt-in text attachment extraction only fetches bounded text-like uploads.

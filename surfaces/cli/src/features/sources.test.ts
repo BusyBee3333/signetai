@@ -7,6 +7,7 @@ import {
 	addDiscordSourceFromCli,
 	addGitHubSourceFromCli,
 	addNotionSourceFromCli,
+	addGoHighLevelSourceFromCli,
 	addStripeSourceFromCli,
 	addObsidianVaultSource,
 	exportConfiguredSourceSnapshot,
@@ -142,6 +143,24 @@ describe("sources CLI features", () => {
 		expect(source?.providerSettings?.repos).toEqual(["Signet-AI/signetai"]);
 		expect(source?.providerSettings?.resourceTypes).toEqual(["issues", "docs"]);
 		expect(logs.join("\n")).toContain("Added GitHub source: GitHub CLI");
+		expect(process.exitCode).not.toBe(1);
+	});
+
+	it("adds a GoHighLevel source from CLI options", async () => {
+		await addGoHighLevelSourceFromCli(
+			{ location: "LocAbc123456789", tokenRef: "GHL_TOKEN", name: "CRM CLI", resource: ["contacts"], maxItems: "40" },
+			{ agentsDir: dir },
+		);
+
+		const [source] = loadSourcesConfig(dir).sources;
+		expect(source?.kind).toBe("gohighlevel");
+		expect(source?.providerSettings).toEqual({
+			tokenRef: "GHL_TOKEN",
+			locationId: "LocAbc123456789",
+			resourceTypes: ["contacts"],
+			maxItemsPerType: 40,
+		});
+		expect(logs.join("\n")).toContain("Added GoHighLevel source: CRM CLI");
 		expect(process.exitCode).not.toBe(1);
 	});
 

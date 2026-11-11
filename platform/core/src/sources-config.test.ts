@@ -12,7 +12,9 @@ import {
 	addGitHubSource,
 	addImportedSource,
 	addNotionSource,
+	addGoHighLevelSource,
 	addStripeSource,
+	goHighLevelSourceId,
 	addObsidianSource,
 	addWebSource,
 	deterministicImportedSourceId,
@@ -23,6 +25,7 @@ import {
 	parseDiscordSettings,
 	parseGitHubSettings,
 	parseNotionSettings,
+	parseGoHighLevelSettings,
 	parseStripeSettings,
 	parseWebSettings,
 	notionSourceId,
@@ -529,6 +532,83 @@ describe("sources-config", () => {
 		expect(second.source.name).toBe("Renamed");
 		expect(parseNotionSettings(second.source.providerSettings)).toEqual({ tokenRef: "NOTION_TOKEN", maxPages: 25 });
 		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(1);
+	});
+
+	it("adds a GoHighLevel source keyed by its location with default resources", () => {
+		const agentsDir = tmp();
+
+		const result = addGoHighLevelSource(
+			{ tokenRef: " GHL_TOKEN ", locationId: " LocAbc123456789 ", name: "CRM", now: "2026-01-02T00:00:00.000Z" },
+			agentsDir,
+		);
+
+		expect(result.ok).toBe(true);
+		if (result.ok === false) throw new Error(result.error);
+		expect(result.source.kind).toBe("gohighlevel");
+		expect(result.source.mode).toBe("read-only");
+		expect(result.source.id).toBe(goHighLevelSourceId("LocAbc123456789"));
+		expect(result.source.root).toBe("gohighlevel://locations/LocAbc123456789");
+		expect(result.source.providerSettings).toEqual({
+			tokenRef: "GHL_TOKEN",
+			locationId: "LocAbc123456789",
+			resourceTypes: ["contacts", "opportunities"],
+			maxItemsPerType: 50_000,
+		});
+	});
+
+	it("preserves GoHighLevel settings on partial update and allows rotating the token reference", () => {
+		const agentsDir = tmp();
+		addGoHighLevelSource(
+			{ tokenRef: "GHL_TOKEN", locationId: "LocAbc123456789", resourceTypes: ["opportunities"], maxItemsPerType: 25 },
+			agentsDir,
+		);
+		const second = addGoHighLevelSource({ tokenRef: "GHL_TOKEN_2", locationId: "LocAbc123456789" }, agentsDir);
+
+		expect(second.ok).toBe(true);
+		if (second.ok === false) throw new Error(second.error);
+		expect(second.created).toBe(false);
+		expect(parseGoHighLevelSettings(second.source.providerSettings)).toEqual({
+			tokenRef: "GHL_TOKEN_2",
+			locationId: "LocAbc123456789",
+			resourceTypes: ["opportunities"],
+			maxItemsPerType: 25,
+		});
+		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(1);
+	});
+
+	it("rejects invalid GoHighLevel source boundaries", () => {
+		const agentsDir = tmp();
+		const locationId = "LocAbc123456789";
+
+		expect(addGoHighLevelSource({ tokenRef: "GHL_TOKEN", locationId: " " }, agentsDir)).toEqual({
+			ok: false,
+			error: "GoHighLevel locationId is required",
+		});
+		expect(addGoHighLevelSource({ tokenRef: "GHL_TOKEN", locationId: "../etc" }, agentsDir).ok).toBe(false);
+		expect(addGoHighLevelSource({ tokenRef: " ", locationId }, agentsDir)).toEqual({
+			ok: false,
+			error: "GoHighLevel tokenRef is required",
+		});
+		for (const tokenRef of [
+			"pit-0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
+			"Bearer GHL_TOKEN",
+			`eyJ${"a".repeat(20)}.${"b".repeat(20)}.${"c".repeat(20)}`,
+		]) {
+			expect(addGoHighLevelSource({ tokenRef, locationId }, agentsDir)).toEqual({
+				ok: false,
+				error: "GoHighLevel tokenRef must be a secret reference, not a raw token",
+			});
+		}
+		expect(
+			addGoHighLevelSource({ tokenRef: "GHL_TOKEN", locationId, resourceTypes: ["conversations"] }, agentsDir),
+		).toEqual({
+			ok: false,
+			error: "Invalid GoHighLevel resource types: conversations. Must be one of: contacts, opportunities",
+		});
+		for (const maxItemsPerType of [0, 1.5, 500_001]) {
+			expect(addGoHighLevelSource({ tokenRef: "GHL_TOKEN", locationId, maxItemsPerType }, agentsDir).ok).toBe(false);
+		}
+		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(0);
 	});
 
 	it("adds a Stripe source keyed by its key reference with default resources", () => {

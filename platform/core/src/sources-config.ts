@@ -153,6 +153,24 @@ export interface AddStripeSourceInput {
 	readonly now?: string;
 }
 
+export type GoHighLevelSourceResourceType = "contacts" | "opportunities";
+
+export interface GoHighLevelSourceSettings {
+	readonly tokenRef: string;
+	readonly locationId: string;
+	readonly resourceTypes: readonly GoHighLevelSourceResourceType[];
+	readonly maxItemsPerType: number;
+}
+
+export interface AddGoHighLevelSourceInput {
+	readonly tokenRef: string;
+	readonly locationId: string;
+	readonly name?: string;
+	readonly resourceTypes?: readonly string[];
+	readonly maxItemsPerType?: number;
+	readonly now?: string;
+}
+
 export type ImportedSourceDuplicateMode = "skip" | "replace" | "reimport";
 
 export interface AddImportedSourceInput {
@@ -201,6 +219,11 @@ export const DEFAULT_STRIPE_RESOURCE_TYPES = ["customers", "subscriptions", "inv
 export const DEFAULT_STRIPE_MAX_ITEMS_PER_TYPE = 5_000;
 export const MAX_STRIPE_MAX_ITEMS_PER_TYPE = 100_000;
 const VALID_STRIPE_RESOURCE_TYPES = new Set<string>(DEFAULT_STRIPE_RESOURCE_TYPES);
+export const DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES = ["contacts", "opportunities"] as const;
+export const DEFAULT_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE = 50_000;
+export const MAX_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE = 500_000;
+const VALID_GOHIGHLEVEL_RESOURCE_TYPES = new Set<string>(DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES);
+const GOHIGHLEVEL_LOCATION_ID = /^[A-Za-z0-9]{10,40}$/;
 
 export function getAgentsDir(): string {
 	return resolveDefaultBasePath();
@@ -281,6 +304,14 @@ export function addStripeSource(input: AddStripeSourceInput, agentsDir = getAgen
 
 export function stripeSourceId(tokenRef: string): string {
 	return `stripe:${createHash("sha256").update(tokenRef.trim()).digest("hex").slice(0, 16)}`;
+}
+
+export function addGoHighLevelSource(input: AddGoHighLevelSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	return withSourcesConfigLock(agentsDir, () => addGoHighLevelSourceUnlocked(input, agentsDir));
+}
+
+export function goHighLevelSourceId(locationId: string): string {
+	return `gohighlevel:${createHash("sha256").update(locationId.trim()).digest("hex").slice(0, 16)}`;
 }
 
 function addWebSourceUnlocked(input: AddWebSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
@@ -624,6 +655,81 @@ function addStripeSourceChecked(input: AddStripeSourceInput, agentsDir = getAgen
 	return { ok: true, source, created: true };
 }
 
+function addGoHighLevelSourceUnlocked(input: AddGoHighLevelSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	try {
+		return addGoHighLevelSourceChecked(input, agentsDir);
+	} catch (err) {
+		const detail = err instanceof Error ? err.message : String(err);
+		return { ok: false, error: detail };
+	}
+}
+
+function addGoHighLevelSourceChecked(input: AddGoHighLevelSourceInput, agentsDir = getAgentsDir()): AddSourceResult {
+	const now = input.now ?? new Date().toISOString();
+	const cfg = loadSourcesConfigForWrite(agentsDir);
+	const locationId = typeof input.locationId === "string" ? input.locationId.trim() : "";
+	const sourceId = goHighLevelSourceId(locationId);
+	const existing = cfg.sources.find((source) => source.id === sourceId);
+	const settings = buildGoHighLevelSettings(
+		input,
+		existing ? parseGoHighLevelSettings(existing.providerSettings) : undefined,
+	);
+	if ("error" in settings) return { ok: false, error: settings.error };
+	const root = `gohighlevel://locations/${settings.locationId}`;
+	if (existing) {
+		const updated: SignetSourceEntry = {
+			...existing,
+			name: cleanName(input.name) ?? existing.name,
+			root,
+			enabled: true,
+			providerSettings: goHighLevelSettingsProviderSettings(settings),
+			generation: newSourceGeneration(),
+			updatedAt: now,
+		};
+		saveSourcesConfig(
+			{
+				version: SOURCES_CONFIG_VERSION,
+				sources: cfg.sources.map((source) => (source.id === existing.id ? updated : source)),
+			},
+			agentsDir,
+		);
+		return { ok: true, source: updated, created: false };
+	}
+
+	const source: SignetSourceEntry = {
+		id: sourceId,
+		generation: newSourceGeneration(),
+		kind: "gohighlevel",
+		name: cleanName(input.name) ?? "GoHighLevel",
+		root,
+		enabled: true,
+		mode: "read-only",
+		createdAt: now,
+		updatedAt: now,
+		providerSettings: goHighLevelSettingsProviderSettings(settings),
+	};
+	saveSourcesConfig({ version: SOURCES_CONFIG_VERSION, sources: [...cfg.sources, source] }, agentsDir);
+	return { ok: true, source, created: true };
+}
+
+export function parseGoHighLevelSettings(raw?: SignetSourceProviderSettings): GoHighLevelSourceSettings {
+	const tokenRef = typeof raw?.tokenRef === "string" ? raw.tokenRef.trim() : "";
+	if (!tokenRef) throw new Error("GoHighLevel source has no tokenRef");
+	const locationId = typeof raw?.locationId === "string" ? raw.locationId.trim() : "";
+	if (!GOHIGHLEVEL_LOCATION_ID.test(locationId)) throw new Error("GoHighLevel source has no valid locationId");
+	const resourceTypes = Array.isArray(raw?.resourceTypes)
+		? uniqueGoHighLevelResourceTypes(raw.resourceTypes.filter(isGoHighLevelResourceType))
+		: [];
+	return {
+		tokenRef,
+		locationId,
+		resourceTypes: resourceTypes.length > 0 ? resourceTypes : [...DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES],
+		maxItemsPerType:
+			cleanPositiveInteger(raw?.maxItemsPerType, MAX_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE) ??
+			DEFAULT_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE,
+	};
+}
+
 export function parseStripeSettings(raw?: SignetSourceProviderSettings): StripeSourceSettings {
 	const tokenRef = typeof raw?.tokenRef === "string" ? raw.tokenRef.trim() : "";
 	if (!tokenRef) throw new Error("Stripe source has no tokenRef");
@@ -905,6 +1011,59 @@ function stripeSettingsProviderSettings(settings: StripeSourceSettings): SignetS
 		resourceTypes: settings.resourceTypes,
 		maxItemsPerType: settings.maxItemsPerType,
 	};
+}
+
+function buildGoHighLevelSettings(
+	input: AddGoHighLevelSourceInput,
+	existing?: GoHighLevelSourceSettings,
+): GoHighLevelSourceSettings | { readonly error: string } {
+	const locationId = typeof input.locationId === "string" ? input.locationId.trim() : "";
+	if (!locationId) return { error: "GoHighLevel locationId is required" };
+	if (!GOHIGHLEVEL_LOCATION_ID.test(locationId)) return { error: "GoHighLevel locationId is not a valid location ID" };
+	const tokenRef = typeof input.tokenRef === "string" ? input.tokenRef.trim() : "";
+	if (!tokenRef) return { error: "GoHighLevel tokenRef is required" };
+	if (looksLikeRawGoHighLevelToken(tokenRef))
+		return { error: "GoHighLevel tokenRef must be a secret reference, not a raw token" };
+	if (input.resourceTypes !== undefined) {
+		if (!Array.isArray(input.resourceTypes) || input.resourceTypes.length === 0) {
+			return { error: "GoHighLevel resourceTypes must include at least one resource type" };
+		}
+		const invalid = input.resourceTypes.filter((type) => !isGoHighLevelResourceType(type));
+		if (invalid.length > 0) {
+			return {
+				error: `Invalid GoHighLevel resource types: ${invalid.join(", ")}. Must be one of: ${[...DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES].join(", ")}`,
+			};
+		}
+	}
+	if (
+		input.maxItemsPerType !== undefined &&
+		cleanPositiveInteger(input.maxItemsPerType, MAX_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE) !== input.maxItemsPerType
+	) {
+		return {
+			error: `GoHighLevel maxItemsPerType must be an integer between 1 and ${MAX_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE}`,
+		};
+	}
+	return {
+		tokenRef,
+		locationId,
+		resourceTypes: input.resourceTypes
+			? uniqueGoHighLevelResourceTypes(input.resourceTypes)
+			: (existing?.resourceTypes ?? [...DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES]),
+		maxItemsPerType: input.maxItemsPerType ?? existing?.maxItemsPerType ?? DEFAULT_GOHIGHLEVEL_MAX_ITEMS_PER_TYPE,
+	};
+}
+
+function goHighLevelSettingsProviderSettings(settings: GoHighLevelSourceSettings): SignetSourceProviderSettings {
+	return {
+		tokenRef: settings.tokenRef,
+		locationId: settings.locationId,
+		resourceTypes: settings.resourceTypes,
+		maxItemsPerType: settings.maxItemsPerType,
+	};
+}
+
+function uniqueGoHighLevelResourceTypes(types: readonly string[]): GoHighLevelSourceResourceType[] {
+	return DEFAULT_GOHIGHLEVEL_RESOURCE_TYPES.filter((type) => types.includes(type));
 }
 
 function uniqueStripeResourceTypes(types: readonly string[]): StripeSourceResourceType[] {
@@ -1377,6 +1536,21 @@ function looksLikeRawStripeKey(value: string): boolean {
 	const withoutAuthScheme = withoutHeaderPrefix.replace(/^(bearer|basic)\s+/i, "").trim();
 	if (withoutAuthScheme !== trimmed) return true;
 	return /^(sk|rk)_(live|test)_[A-Za-z0-9]{10,}$/.test(withoutAuthScheme);
+}
+
+function looksLikeRawGoHighLevelToken(value: string): boolean {
+	const trimmed = value.trim();
+	const withoutHeaderPrefix = trimmed.replace(/^authorization:\s*/i, "").trim();
+	const withoutAuthScheme = withoutHeaderPrefix.replace(/^bearer\s+/i, "").trim();
+	if (withoutAuthScheme !== trimmed) return true;
+	return (
+		/^pit-[0-9a-f-]{20,}$/i.test(withoutAuthScheme) ||
+		/^eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$/.test(withoutAuthScheme)
+	);
+}
+
+function isGoHighLevelResourceType(value: unknown): value is GoHighLevelSourceResourceType {
+	return typeof value === "string" && VALID_GOHIGHLEVEL_RESOURCE_TYPES.has(value);
 }
 
 function isStripeResourceType(value: unknown): value is StripeSourceResourceType {
