@@ -12,7 +12,9 @@ import {
 	addGitHubSource,
 	addImportedSource,
 	addNotionSource,
+	addGmailSource,
 	addGoHighLevelSource,
+	gmailSourceId,
 	addStripeSource,
 	goHighLevelSourceId,
 	addObsidianSource,
@@ -25,6 +27,7 @@ import {
 	parseDiscordSettings,
 	parseGitHubSettings,
 	parseNotionSettings,
+	parseGmailSettings,
 	parseGoHighLevelSettings,
 	parseStripeSettings,
 	parseWebSettings,
@@ -532,6 +535,61 @@ describe("sources-config", () => {
 		expect(second.source.name).toBe("Renamed");
 		expect(parseNotionSettings(second.source.providerSettings)).toEqual({ tokenRef: "NOTION_TOKEN", maxPages: 25 });
 		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(1);
+	});
+
+	it("adds a Gmail source keyed by its credentials reference and preserves settings on update", () => {
+		const agentsDir = tmp();
+
+		const first = addGmailSource(
+			{ tokenRef: " GMAIL_OAUTH ", name: "Billing mail", query: " label:billing ", maxMessages: 50 },
+			agentsDir,
+		);
+		expect(first.ok).toBe(true);
+		if (first.ok === false) throw new Error(first.error);
+		expect(first.source.kind).toBe("gmail");
+		expect(first.source.mode).toBe("read-only");
+		expect(first.source.id).toBe(gmailSourceId("GMAIL_OAUTH"));
+		expect(first.source.root).toBe("gmail://accounts/GMAIL_OAUTH");
+		expect(first.source.providerSettings).toEqual({ tokenRef: "GMAIL_OAUTH", query: "label:billing", maxMessages: 50 });
+
+		const second = addGmailSource({ tokenRef: "GMAIL_OAUTH", name: "Renamed" }, agentsDir);
+		expect(second.ok).toBe(true);
+		if (second.ok === false) throw new Error(second.error);
+		expect(second.created).toBe(false);
+		expect(parseGmailSettings(second.source.providerSettings)).toEqual({
+			tokenRef: "GMAIL_OAUTH",
+			query: "label:billing",
+			maxMessages: 50,
+		});
+		expect(parseGmailSettings({ tokenRef: "GMAIL_OAUTH" })).toEqual({
+			tokenRef: "GMAIL_OAUTH",
+			query: "",
+			maxMessages: 5_000,
+		});
+		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(1);
+	});
+
+	it("rejects invalid Gmail source boundaries", () => {
+		const agentsDir = tmp();
+
+		expect(addGmailSource({ tokenRef: " " }, agentsDir)).toEqual({ ok: false, error: "Gmail tokenRef is required" });
+		for (const tokenRef of [
+			'{"client_id":"a","client_secret":"b","refresh_token":"c"}',
+			`ya29.${"a".repeat(30)}`,
+			`1//${"b".repeat(40)}`,
+			`GOCSPX-${"c".repeat(20)}`,
+			"Bearer GMAIL_OAUTH",
+		]) {
+			expect(addGmailSource({ tokenRef }, agentsDir)).toEqual({
+				ok: false,
+				error: "Gmail tokenRef must be a secret reference, not raw credentials",
+			});
+		}
+		expect(addGmailSource({ tokenRef: "GMAIL_OAUTH", query: "x".repeat(501) }, agentsDir).ok).toBe(false);
+		for (const maxMessages of [0, 1.5, 200_001]) {
+			expect(addGmailSource({ tokenRef: "GMAIL_OAUTH", maxMessages }, agentsDir).ok).toBe(false);
+		}
+		expect(loadSourcesConfig(agentsDir).sources).toHaveLength(0);
 	});
 
 	it("adds a GoHighLevel source keyed by its location with default resources", () => {

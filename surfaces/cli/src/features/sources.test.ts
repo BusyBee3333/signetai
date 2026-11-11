@@ -7,6 +7,7 @@ import {
 	addDiscordSourceFromCli,
 	addGitHubSourceFromCli,
 	addNotionSourceFromCli,
+	addGmailSourceFromCli,
 	addGoHighLevelSourceFromCli,
 	addStripeSourceFromCli,
 	addObsidianVaultSource,
@@ -143,6 +144,19 @@ describe("sources CLI features", () => {
 		expect(source?.providerSettings?.repos).toEqual(["Signet-AI/signetai"]);
 		expect(source?.providerSettings?.resourceTypes).toEqual(["issues", "docs"]);
 		expect(logs.join("\n")).toContain("Added GitHub source: GitHub CLI");
+		expect(process.exitCode).not.toBe(1);
+	});
+
+	it("adds a Gmail source from CLI options", async () => {
+		await addGmailSourceFromCli(
+			{ tokenRef: "GMAIL_OAUTH", name: "Mail CLI", query: "label:billing", maxMessages: "40" },
+			{ agentsDir: dir },
+		);
+
+		const [source] = loadSourcesConfig(dir).sources;
+		expect(source?.kind).toBe("gmail");
+		expect(source?.providerSettings).toEqual({ tokenRef: "GMAIL_OAUTH", query: "label:billing", maxMessages: 40 });
+		expect(logs.join("\n")).toContain("Added Gmail source: Mail CLI");
 		expect(process.exitCode).not.toBe(1);
 	});
 

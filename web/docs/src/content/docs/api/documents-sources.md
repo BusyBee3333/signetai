@@ -138,13 +138,13 @@ number of chunk links on the document.
 
 Sources connect read-only external knowledge bases to Signet recall without
 turning them into ordinary saved memories. Supported source kinds are
-`obsidian`, `discord`, `github`, `gohighlevel`, `notion`, `stripe`, `web`, and `import`.
+`obsidian`, `discord`, `github`, `gmail`, `gohighlevel`, `notion`, `stripe`, `web`, and `import`.
 
 In `team` and `hybrid` mode, permissions apply as follows:
 
 - `POST /api/sources/import` requires `documents`. Its `paths` field requires `admin`.
 - Routes that read or browse the daemon host require `admin`: `POST /api/sources/obsidian`, `POST /api/sources/pick-files`, `POST /api/sources/pick-directory`, and `POST /api/sources/discord` with `syncMode: "desktop-cache"` or `desktopCachePath`.
-- Other source changes require `connectors`: `POST /api/sources/discord`, `github`, `gohighlevel`, `notion`, `stripe`, and `web`, `POST /api/sources/:sourceId/snapshot/import`, and `DELETE /api/sources/:sourceId`.
+- Other source changes require `connectors`: `POST /api/sources/discord`, `github`, `gmail`, `gohighlevel`, `notion`, `stripe`, and `web`, `POST /api/sources/:sourceId/snapshot/import`, and `DELETE /api/sources/:sourceId`.
 - `GET /api/sources/:sourceId/snapshot` requires `connectors`.
 
 In every auth mode, the daemon refuses an import path or folder root that is inside its own runtime, secrets, database, or transcript directories. It also refuses a folder root that contains one of them. For Obsidian sources, which never index hidden directories, a root is allowed when the private directory is below a hidden directory, so a vault rooted at `~` still works with the workspace at `~/.agents`. Paths are compared after `~` expansion and symlink resolution, and the request returns `400`.
@@ -661,6 +661,51 @@ that could not be retrieved, and unconfirmed removals. Blocks the API cannot
 render become `[Unsupported Notion block: <type>]` placeholders. Pages whose edit minute has not changed since a completed
 fetch are not refetched, and pages no longer shared are removed after a complete
 enumeration once Notion confirms they are gone.
+
+### POST /api/sources/gmail
+
+Add or update a Gmail source and queue a shared source index job. The source
+indexes the messages of the mailbox that the OAuth credentials `tokenRef`
+resolves to can read. The secret must be a JSON object with `client_id`,
+`client_secret`, and `refresh_token`. Raw credentials are rejected; pass a
+Signet secret name or external secret reference instead. The source ID is
+derived from `tokenRef`, so posting the same `tokenRef` again updates the
+existing source and preserves omitted settings.
+
+**Request body**
+
+```json
+{
+  "tokenRef": "GMAIL_OAUTH",
+  "name": "Billing mail",
+  "query": "label:billing",
+  "maxMessages": 5000
+}
+```
+
+`tokenRef` is required. `query` is a Gmail search string of at most 500
+characters (default empty, meaning all mail outside Spam and Trash).
+`maxMessages` is an integer from 1 to 200000 (default 5000); messages are
+enumerated newest first. Malformed bodies and wrongly typed fields return `400`
+without changing source config.
+
+**Response**
+
+```json
+{
+  "source": { "id": "gmail:abc123", "kind": "gmail" },
+  "created": true,
+  "indexed": 0,
+  "queued": true,
+  "job": { "status": "queued", "sourceId": "gmail:abc123" }
+}
+```
+
+The sync path writes one `source_gmail_message` artifact per message and
+`source_gmail_failure` artifacts for failed or incomplete syncs. Attachment
+contents and labels are not stored. Indexed messages are not fetched again, and
+messages that no longer match are removed only after the list is followed to its
+end.
 
 ### POST /api/sources/gohighlevel
 

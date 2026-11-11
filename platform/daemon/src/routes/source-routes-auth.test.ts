@@ -175,6 +175,7 @@ describe("source route authorization in team mode", () => {
 		const mutations: ReadonlyArray<readonly [string, string]> = [
 			["POST", "/api/sources/discord"],
 			["POST", "/api/sources/github"],
+			["POST", "/api/sources/gmail"],
 			["POST", "/api/sources/gohighlevel"],
 			["POST", "/api/sources/notion"],
 			["POST", "/api/sources/stripe"],

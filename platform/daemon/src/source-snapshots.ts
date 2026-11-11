@@ -413,6 +413,7 @@ function indexesSnapshotArtifactGraph(artifact: SourceSnapshotArtifact): boolean
 		"source_discord_checkpoint",
 		"source_discord_failure",
 		"source_github_failure",
+		"source_gmail_failure",
 		"source_gohighlevel_failure",
 		"source_notion_failure",
 		"source_stripe_failure",

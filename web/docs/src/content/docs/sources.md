@@ -5,7 +5,7 @@ description: "Connect read-only knowledge bases like Obsidian vaults directly in
 
 Sources are external knowledge bases that Signet can read, index, and recall from without turning them into ordinary saved memories.
 
-Sources currently support **Web pages**, **Obsidian** vaults, **Discord** guilds, **GitHub** repositories, **Notion** workspaces, **Stripe** accounts, and **GoHighLevel** locations. Add a public Web page URL and Signet fetches it through the dedicated web provider, uses Defuddle to extract readable Markdown and page metadata, then stores the result as source-backed evidence. Point Signet at an Obsidian vault and the daemon mounts that vault as a read-only knowledge base: Markdown files become searchable artifacts, the vault structure becomes graph topology, and heading-aware chunks participate in semantic recall. Add Discord with a bot-token secret reference and Signet indexes guild topology, channels, threads, members, message windows, and Discord metadata through the same source-owned artifact lifecycle. Add GitHub repositories to index issues, pull requests, discussions, selected Markdown docs, comments, and source failure artifacts through the shared source provider pipeline. Add Notion with an internal-integration token secret reference and Signet indexes every page shared with that integration, including database entries, as Markdown source artifacts.
+Sources currently support **Web pages**, **Obsidian** vaults, **Discord** guilds, **GitHub** repositories, **Notion** workspaces, **Stripe** accounts, **GoHighLevel** locations, and **Gmail** mailboxes. Add a public Web page URL and Signet fetches it through the dedicated web provider, uses Defuddle to extract readable Markdown and page metadata, then stores the result as source-backed evidence. Point Signet at an Obsidian vault and the daemon mounts that vault as a read-only knowledge base: Markdown files become searchable artifacts, the vault structure becomes graph topology, and heading-aware chunks participate in semantic recall. Add Discord with a bot-token secret reference and Signet indexes guild topology, channels, threads, members, message windows, and Discord metadata through the same source-owned artifact lifecycle. Add GitHub repositories to index issues, pull requests, discussions, selected Markdown docs, comments, and source failure artifacts through the shared source provider pipeline. Add Notion with an internal-integration token secret reference and Signet indexes every page shared with that integration, including database entries, as Markdown source artifacts.
 
 The important rule is simple: **the source stays canonical**. Signet reads from the vault. It does not edit notes, rewrite frontmatter, create files, or move anything inside the source directory.
 
@@ -273,6 +273,52 @@ Comments, file attachments, and data-source schemas are not indexed in v1.
 Pages removed from
 the index are soft-deleted and their content is retained until the source
 itself is removed.
+
+## Gmail v1
+
+Gmail Sources v1 indexes the messages of one Gmail mailbox as read-only
+Markdown source artifacts. The Dashboard does not offer Gmail yet; add it
+through the CLI or the
+[Gmail source API](/api/documents-sources/#post-api-sources-gmail).
+
+```bash
+signet secret put GMAIL_OAUTH
+signet sources add gmail --token-ref GMAIL_OAUTH --name "Billing mail"
+signet sources add gmail --token-ref GMAIL_OAUTH --query "label:billing newer_than:2y" --max-messages 20000
+signet sources list
+signet sources remove gmail:...
+```
+
+The secret must hold a JSON object with `client_id`, `client_secret`, and
+`refresh_token` for a Google OAuth client authorized with the
+`https://www.googleapis.com/auth/gmail.readonly` scope; the "authorized user"
+credentials file Google tools write has this shape. Signet does not run the
+consent flow. Raw credentials are rejected as `--token-ref`. The source ID is
+derived from the token reference, so adding the same `--token-ref` again updates
+the existing source and preserves omitted settings.
+
+Each sync exchanges the refresh token for a short-lived access token, lists
+message IDs newest first, 500 per request, and fetches each message it has not
+indexed yet. `--query` accepts Gmail search syntax and limits which messages are
+indexed; Gmail leaves Spam and Trash out unless the query asks for them.
+`--max-messages` caps the messages enumerated (default 5,000, maximum 200,000).
+
+Each message becomes one `source_gmail_message` artifact holding its subject,
+sender, recipients, date, thread ID, attachment file names, and text. Plain-text
+parts are preferred; HTML-only messages are reduced to text. Attachment contents
+and labels are not stored, and message text is capped at 100,000 characters with
+a note. Message text is stored as received, so anything sent by email becomes
+searchable.
+
+Indexed messages are not fetched again. Messages that no longer match are
+soft-deleted only after the list was followed to its end; a capped, failed, or
+cancelled enumeration removes nothing. Failed requests are retried with bounded
+backoff and honor `Retry-After`, and an expired access token is refreshed once
+per request. Messages that could not be fetched are reported and retried on the
+next sync. The sync stops and reports it when Google rejects the credentials,
+after five consecutive transient request failures, or after three hours.
+Failures are written as `source_gmail_failure` artifacts and cause the shared
+source job to report failure until resolved.
 
 ## GoHighLevel v1
 
@@ -548,6 +594,7 @@ The daemon exposes the Sources lifecycle under `/api/sources`:
 | `POST` | `/api/sources/obsidian` | Add/update an Obsidian vault source and index it. |
 | `POST` | `/api/sources/discord` | Add/update a Discord source and queue a shared source index job. |
 | `POST` | `/api/sources/github` | Add/update a GitHub source and queue a shared source index job. |
+| `POST` | `/api/sources/gmail` | Add/update a Gmail source and queue a shared source index job. |
 | `POST` | `/api/sources/gohighlevel` | Add/update a GoHighLevel source and queue a shared source index job. |
 | `POST` | `/api/sources/notion` | Add/update a Notion source and queue a shared source index job. |
 | `POST` | `/api/sources/stripe` | Add/update a Stripe source and queue a shared source index job. |
@@ -565,7 +612,7 @@ The desktop shell uses native folder selection through IPC. The daemon picker ro
 - Discord gateway tailing depends on a bot token with the required gateway
   intents and keeps a source job open while it is connected.
 - Sources are local/operator-managed. Permissions and RBAC are intentionally out of scope for v1.
-- Signet does not write back to Obsidian, Discord, GitHub, Notion, Stripe, or GoHighLevel.
+- Signet does not write back to Obsidian, Discord, GitHub, Notion, Stripe, GoHighLevel, or Gmail.
 - Rename handling is delete + add.
 - Non-Markdown Obsidian attachments are not indexed by the Obsidian v1 source path.
 - Discord attachment binary/media extraction is disabled by default; opt-in text attachment extraction only fetches bounded text-like uploads.

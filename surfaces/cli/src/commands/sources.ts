@@ -8,6 +8,7 @@ import {
 	addDiscordSourceFromCli,
 	addGitHubSourceFromCli,
 	addNotionSourceFromCli,
+	addGmailSourceFromCli,
 	addGoHighLevelSourceFromCli,
 	addStripeSourceFromCli,
 	addObsidianVaultSource,
@@ -396,6 +397,25 @@ export function registerSourcesCommands(program: Command, deps: RegisterSourcesC
 				...deps,
 				addNotionSourceToDaemon: deps.secretApiCall
 					? (input) => addSourceThroughDaemon(deps.secretApiCall, "/api/sources/notion", input)
+					: undefined,
+			}),
+		);
+
+	add
+		.command("gmail")
+		.description("Index Gmail messages from one mailbox as read-only recall sources")
+		.requiredOption(
+			"--token-ref <secret>",
+			"Signet secret name or external secret reference for the OAuth credentials JSON",
+		)
+		.option("--name <name>", "Display name for the Gmail source")
+		.option("--query <search>", "Gmail search query that limits which messages are indexed")
+		.option("--max-messages <count>", "Maximum messages to index, newest first")
+		.action((options) =>
+			addGmailSourceFromCli(options, {
+				...deps,
+				addGmailSourceToDaemon: deps.secretApiCall
+					? (input) => addSourceThroughDaemon(deps.secretApiCall, "/api/sources/gmail", input)
 					: undefined,
 			}),
 		);
