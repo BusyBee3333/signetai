@@ -137,7 +137,20 @@ export interface AddNotionSourceInput {
 	readonly now?: string;
 }
 
-export type StripeSourceResourceType = "customers" | "subscriptions" | "invoices" | "charges";
+export type StripeSourceResourceType =
+	| "customers"
+	| "subscriptions"
+	| "invoices"
+	| "charges"
+	| "refunds"
+	| "disputes"
+	| "credit_notes"
+	| "coupons"
+	| "products"
+	| "prices"
+	| "payouts"
+	| "balance_transactions"
+	| "events";
 
 export interface StripeSourceSettings {
 	readonly tokenRef: string;
@@ -232,7 +245,19 @@ export const MAX_NOTION_MAX_PAGES = 10_000;
 export const DEFAULT_STRIPE_RESOURCE_TYPES = ["customers", "subscriptions", "invoices", "charges"] as const;
 export const DEFAULT_STRIPE_MAX_ITEMS_PER_TYPE = 5_000;
 export const MAX_STRIPE_MAX_ITEMS_PER_TYPE = 100_000;
-const VALID_STRIPE_RESOURCE_TYPES = new Set<string>(DEFAULT_STRIPE_RESOURCE_TYPES);
+export const STRIPE_RESOURCE_TYPES = [
+	...DEFAULT_STRIPE_RESOURCE_TYPES,
+	"refunds",
+	"disputes",
+	"credit_notes",
+	"coupons",
+	"products",
+	"prices",
+	"payouts",
+	"balance_transactions",
+	"events",
+] as const;
+const VALID_STRIPE_RESOURCE_TYPES = new Set<string>(STRIPE_RESOURCE_TYPES);
 export const DEFAULT_GMAIL_MAX_MESSAGES = 5_000;
 export const MAX_GMAIL_MAX_MESSAGES = 200_000;
 export const MAX_GMAIL_QUERY_CHARS = 500;
@@ -1076,7 +1101,7 @@ function buildStripeSettings(
 		const invalid = input.resourceTypes.filter((type) => !isStripeResourceType(type));
 		if (invalid.length > 0) {
 			return {
-				error: `Invalid Stripe resource types: ${invalid.join(", ")}. Must be one of: ${[...DEFAULT_STRIPE_RESOURCE_TYPES].join(", ")}`,
+				error: `Invalid Stripe resource types: ${invalid.join(", ")}. Must be one of: ${[...STRIPE_RESOURCE_TYPES].join(", ")}`,
 			};
 		}
 	}
@@ -1188,7 +1213,7 @@ function uniqueGoHighLevelResourceTypes(types: readonly string[]): GoHighLevelSo
 }
 
 function uniqueStripeResourceTypes(types: readonly string[]): StripeSourceResourceType[] {
-	return DEFAULT_STRIPE_RESOURCE_TYPES.filter((type) => types.includes(type));
+	return STRIPE_RESOURCE_TYPES.filter((type) => types.includes(type));
 }
 
 function discordSettingsProviderSettings(settings: DiscordSourceSettings): SignetSourceProviderSettings {

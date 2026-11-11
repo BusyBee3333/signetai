@@ -35,6 +35,15 @@ const ARTIFACT_KINDS: Readonly<Record<StripeSourceResourceType, string>> = {
 	subscriptions: "source_stripe_subscription",
 	invoices: "source_stripe_invoice",
 	charges: "source_stripe_charge",
+	refunds: "source_stripe_refund",
+	disputes: "source_stripe_dispute",
+	credit_notes: "source_stripe_credit_note",
+	coupons: "source_stripe_coupon",
+	products: "source_stripe_product",
+	prices: "source_stripe_price",
+	payouts: "source_stripe_payout",
+	balance_transactions: "source_stripe_balance_transaction",
+	events: "source_stripe_event",
 };
 
 let syncDeadlineMs = STRIPE_SYNC_DEADLINE_MS;

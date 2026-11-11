@@ -408,8 +408,7 @@ the existing source and preserves omitted settings.
 
 Each sync lists the selected resource types newest first through Stripe's list
 endpoints, 100 objects per request, pinned to API version `2026-09-30.endive`.
-`--resource` selects `customers`, `subscriptions`, `invoices`, or `charges`
-(default all four); subscriptions are listed in every status. `--max-items`
+`--resource` selects `customers`, `subscriptions`, `invoices`, `charges`, `refunds`, `disputes`, `credit_notes`, `coupons`, `products`, `prices`, `payouts`, `balance_transactions`, or `events` (the first four by default). Refunds and disputes are linked to their customer through the charge. Invoices include their first line items and discounts. Stripe keeps events for about 30 days, so `events` cannot rebuild older history. Subscriptions are listed in every status. `--max-items`
 caps the objects indexed per resource type (default 5,000, maximum 100,000).
 
 Each object becomes one artifact (`source_stripe_customer`,

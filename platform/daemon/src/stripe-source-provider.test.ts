@@ -254,6 +254,174 @@ describe("stripe-source-provider", () => {
 		});
 	});
 
+	it("indexes refunds, disputes, credit notes, catalog, payouts, balance transactions, and events", async () => {
+		const source = addSource({
+			resourceTypes: [
+				"invoices",
+				"refunds",
+				"disputes",
+				"credit_notes",
+				"coupons",
+				"products",
+				"prices",
+				"payouts",
+				"balance_transactions",
+				"events",
+			],
+		});
+		const base = { created: 1_767_225_600, livemode: true };
+		const data: Record<string, unknown> = {
+			"/invoices": {
+				...invoice,
+				discounts: [{ id: "di_1", coupon: { id: "co_1", name: "Founders 20" } }],
+				lines: {
+					total_count: 12,
+					data: [{ description: "Growth plan", amount: 29_700, period: { start: 1_767_225_600, end: 1_769_904_000 } }],
+				},
+			},
+			"/refunds": {
+				...base,
+				id: "re_1",
+				object: "refund",
+				amount: 5_000,
+				currency: "usd",
+				status: "succeeded",
+				reason: "requested_by_customer",
+				charge: { id: "ch_1", object: "charge", customer: "cus_1" },
+			},
+			"/disputes": {
+				...base,
+				id: "dp_1",
+				object: "dispute",
+				amount: 29_700,
+				currency: "usd",
+				status: "needs_response",
+				reason: "fraudulent",
+				charge: { id: "ch_1", object: "charge", customer: { id: "cus_1" } },
+				evidence_details: { due_by: 1_769_904_000 },
+			},
+			"/credit_notes": {
+				...base,
+				id: "cn_1",
+				object: "credit_note",
+				number: "BLG-0001-CN-01",
+				customer: "cus_1",
+				invoice: "in_1",
+				status: "issued",
+				total: 5_000,
+				currency: "usd",
+			},
+			"/coupons": {
+				...base,
+				id: "co_1",
+				object: "coupon",
+				name: "Founders 20",
+				percent_off: 20,
+				duration: "forever",
+				valid: true,
+			},
+			"/products": {
+				...base,
+				id: "prod_1",
+				object: "product",
+				name: "Growth plan",
+				active: true,
+				default_price: "price_1",
+			},
+			"/prices": {
+				...base,
+				id: "price_1",
+				object: "price",
+				product: "prod_1",
+				active: true,
+				unit_amount: 29_700,
+				currency: "usd",
+				type: "recurring",
+				recurring: { interval: "month", interval_count: 1 },
+			},
+			"/payouts": {
+				...base,
+				id: "po_1",
+				object: "payout",
+				amount: 100_000,
+				currency: "usd",
+				status: "paid",
+				arrival_date: 1_767_312_000,
+			},
+			"/balance_transactions": {
+				...base,
+				id: "txn_1",
+				object: "balance_transaction",
+				type: "charge",
+				source: "ch_1",
+				amount: 29_700,
+				fee: 891,
+				net: 28_809,
+				currency: "usd",
+				status: "available",
+			},
+			"/events": {
+				...base,
+				id: "evt_1",
+				object: "event",
+				type: "customer.subscription.updated",
+				data: {
+					object: {
+						id: "sub_1",
+						object: "subscription",
+						customer: "cus_1",
+						status: "past_due",
+						card: { last4: CARD_LAST4 },
+					},
+					previous_attributes: { status: "active", cancel_at_period_end: false },
+				},
+			},
+		};
+		const requests = stubStripe((request) =>
+			data[request.path] ? list([data[request.path]]) : stripeError(404, "resource_missing"),
+		);
+
+		const result = await sync(source);
+
+		expect(result.failures).toEqual([]);
+		expect(result).toMatchObject({ indexed: 10, scanned: 10 });
+		expect(requests.find((request) => request.path === "/refunds")?.query.getAll("expand[]")).toEqual(["data.charge"]);
+		expect(requests.find((request) => request.path === "/disputes")?.query.getAll("expand[]")).toEqual(["data.charge"]);
+		expect(requests.find((request) => request.path === "/payouts")?.query.getAll("expand[]")).toEqual([]);
+		const byId = new Map(liveRows(source.id).map((row) => [row.source_external_id, row]));
+		expect([...byId.values()].map((row) => row.source_kind).sort()).toEqual([
+			"source_stripe_balance_transaction",
+			"source_stripe_coupon",
+			"source_stripe_credit_note",
+			"source_stripe_dispute",
+			"source_stripe_event",
+			"source_stripe_invoice",
+			"source_stripe_payout",
+			"source_stripe_price",
+			"source_stripe_product",
+			"source_stripe_refund",
+		]);
+		expect(byId.get("in_1")?.content).toContain("- Discounts: Founders 20 di_1");
+		expect(byId.get("in_1")?.content).toContain(
+			"- Line 1: Growth plan · 297.00 USD · 2026-01-01T00:00:00.000Z to 2026-02-01T00:00:00.000Z",
+		);
+		expect(byId.get("in_1")?.content).toContain("- Lines not shown: 11");
+		expect(byId.get("re_1")?.content).toContain("- Customer: cus_1");
+		expect(byId.get("re_1")?.content).toContain("- Charge: ch_1");
+		expect(byId.get("re_1")?.content).toContain("- Amount: 50.00 USD");
+		expect(byId.get("re_1")?.content).toContain("- Reason: requested_by_customer");
+		expect(byId.get("dp_1")?.content).toContain("- Customer: cus_1");
+		expect(byId.get("dp_1")?.content).toContain("- Evidence due by: 2026-02-01T00:00:00.000Z");
+		expect(byId.get("cn_1")?.content).toContain("- Invoice: in_1");
+		expect(byId.get("co_1")?.content).toContain("- Percent off: 20%");
+		expect(byId.get("price_1")?.content).toContain("- Billing interval: every 1 month");
+		expect(byId.get("txn_1")?.content).toContain("- Net: 288.09 USD");
+		expect(byId.get("evt_1")?.content).toContain("# Event customer.subscription.updated");
+		expect(byId.get("evt_1")?.content).toContain("- Customer: cus_1");
+		expect(byId.get("evt_1")?.content).toContain("- Changed fields: cancel_at_period_end, status");
+		expect(byId.get("evt_1")?.content).not.toContain(CARD_LAST4);
+	});
+
 	it("makes indexed objects available to recall with their source path", async () => {
 		const source = addSource();
 		stubStripe(fullAccount([customer("cus_1", { name: "Ironworks Barbell Club" })]));

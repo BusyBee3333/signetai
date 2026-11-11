@@ -726,9 +726,10 @@ describe("sources-config", () => {
 			});
 		}
 		expect(addStripeSource({ tokenRef: "STRIPE_KEY", resourceTypes: [] }, agentsDir).ok).toBe(false);
-		expect(addStripeSource({ tokenRef: "STRIPE_KEY", resourceTypes: ["payouts"] }, agentsDir)).toEqual({
+		expect(addStripeSource({ tokenRef: "STRIPE_KEY", resourceTypes: ["payment_intents"] }, agentsDir)).toEqual({
 			ok: false,
-			error: "Invalid Stripe resource types: payouts. Must be one of: customers, subscriptions, invoices, charges",
+			error:
+				"Invalid Stripe resource types: payment_intents. Must be one of: customers, subscriptions, invoices, charges, refunds, disputes, credit_notes, coupons, products, prices, payouts, balance_transactions, events",
 		});
 		for (const maxItemsPerType of [0, 1.5, 100_001]) {
 			expect(addStripeSource({ tokenRef: "STRIPE_KEY", maxItemsPerType }, agentsDir).ok).toBe(false);

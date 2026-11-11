@@ -101,6 +101,15 @@ const LIST_PATHS: Readonly<Record<StripeSourceResourceType, string>> = {
 	subscriptions: "/subscriptions",
 	invoices: "/invoices",
 	charges: "/charges",
+	refunds: "/refunds",
+	disputes: "/disputes",
+	credit_notes: "/credit_notes",
+	coupons: "/coupons",
+	products: "/products",
+	prices: "/prices",
+	payouts: "/payouts",
+	balance_transactions: "/balance_transactions",
+	events: "/events",
 };
 
 const OBJECT_NAMES: Readonly<Record<StripeSourceResourceType, string>> = {
@@ -108,6 +117,15 @@ const OBJECT_NAMES: Readonly<Record<StripeSourceResourceType, string>> = {
 	subscriptions: "subscription",
 	invoices: "invoice",
 	charges: "charge",
+	refunds: "refund",
+	disputes: "dispute",
+	credit_notes: "credit_note",
+	coupons: "coupon",
+	products: "product",
+	prices: "price",
+	payouts: "payout",
+	balance_transactions: "balance_transaction",
+	events: "event",
 };
 
 export async function listStripePage(
@@ -119,6 +137,8 @@ export async function listStripePage(
 ): Promise<StripeListPage> {
 	const query = new URLSearchParams({ limit: String(Math.max(1, Math.min(STRIPE_PAGE_SIZE, limit))) });
 	if (resource === "subscriptions") query.set("status", "all");
+	// Refunds and disputes name only their charge; expanding it yields the customer they belong to.
+	if (resource === "refunds" || resource === "disputes") query.append("expand[]", "data.charge");
 	if (startingAfter) query.set("starting_after", startingAfter);
 	const body = asRecord(await stripeRequest(token, `${LIST_PATHS[resource]}?${query.toString()}`, shouldContinue));
 	if (!Array.isArray(body.data)) {
@@ -289,7 +309,41 @@ export function parseStripeRecord(resource: StripeSourceResourceType, value: unk
 		const number = text(record.number);
 		return { ...base, title: `Invoice ${number || id}`, customerId, fields: invoiceFields(record, customerId) };
 	}
-	return { ...base, title: `Charge ${id}`, customerId, fields: chargeFields(record, customerId) };
+	if (resource === "charges") {
+		return { ...base, title: `Charge ${id}`, customerId, fields: chargeFields(record, customerId) };
+	}
+	if (resource === "refunds" || resource === "disputes") {
+		const owner = expandableId(asRecord(record.charge).customer);
+		const label = resource === "refunds" ? "Refund" : "Dispute";
+		return { ...base, title: `${label} ${id}`, customerId: owner, fields: chargeAdjustmentFields(record, owner) };
+	}
+	if (resource === "credit_notes") {
+		const number = text(record.number);
+		return { ...base, title: `Credit note ${number || id}`, customerId, fields: creditNoteFields(record, customerId) };
+	}
+	if (resource === "coupons") {
+		return { ...base, title: `Coupon ${text(record.name) || id}`, customerId: null, fields: couponFields(record) };
+	}
+	if (resource === "products") {
+		return { ...base, title: `Product ${text(record.name) || id}`, customerId: null, fields: productFields(record) };
+	}
+	if (resource === "prices") {
+		return { ...base, title: `Price ${text(record.nickname) || id}`, customerId: null, fields: priceFields(record) };
+	}
+	if (resource === "payouts") {
+		return { ...base, title: `Payout ${id}`, customerId: null, fields: payoutFields(record) };
+	}
+	if (resource === "balance_transactions") {
+		return { ...base, title: `Balance transaction ${id}`, customerId: null, fields: balanceTransactionFields(record) };
+	}
+	const subject = asRecord(asRecord(record.data).object);
+	const eventCustomer = subject.object === "customer" ? text(subject.id) || null : expandableId(subject.customer);
+	return {
+		...base,
+		title: `Event ${text(record.type) || id}`,
+		customerId: eventCustomer,
+		fields: eventFields(record, subject, eventCustomer),
+	};
 }
 
 function customerFields(record: Record<string, unknown>): StripeRecordField[] {
@@ -326,6 +380,7 @@ function subscriptionFields(record: Record<string, unknown>, customerId: string 
 		field("Trial end", timestamp(record.trial_end)),
 		field("Collection method", text(record.collection_method)),
 		field("Latest invoice", expandableId(record.latest_invoice) ?? ""),
+		field("Discounts", discountIds(record.discounts)),
 		...lines.slice(0, MAX_LINE_ITEMS).map((line, index) => field(`Item ${index + 1}`, subscriptionItem(line))),
 		field("Items not shown", lines.length > MAX_LINE_ITEMS ? String(lines.length - MAX_LINE_ITEMS) : ""),
 		...metadataFields(record.metadata),
@@ -353,6 +408,13 @@ function invoiceFields(record: Record<string, unknown>, customerId: string | nul
 	const parent = asRecord(asRecord(record.parent).subscription_details);
 	const subscription = expandableId(record.subscription) ?? expandableId(parent.subscription);
 	const amount = (value: unknown): string => (currency ? money(value, currency) : "");
+	const lineList = asRecord(record.lines);
+	const invoiceLines = Array.isArray(lineList.data) ? lineList.data.map(asRecord) : [];
+	const invoiceLineTotal =
+		typeof lineList.total_count === "number"
+			? lineList.total_count
+			: invoiceLines.length + (lineList.has_more === true ? 1 : 0);
+	const invoiceLinesShown = Math.min(invoiceLines.length, MAX_LINE_ITEMS);
 	return compact([
 		field("Number", text(record.number)),
 		field("Customer", customerId ?? ""),
@@ -372,6 +434,18 @@ function invoiceFields(record: Record<string, unknown>, customerId: string | nul
 		field("Attempt count", typeof record.attempt_count === "number" ? String(record.attempt_count) : ""),
 		field("Next payment attempt", timestamp(record.next_payment_attempt)),
 		field("Description", text(record.description)),
+		field("Discounts", discountIds(record.discounts)),
+		...invoiceLines
+			.slice(0, MAX_LINE_ITEMS)
+			.map((line, index) =>
+				field(
+					`Line ${index + 1}`,
+					[text(line.description), currency ? money(line.amount, currency) : "", periodText(line.period)]
+						.filter(Boolean)
+						.join(" · "),
+				),
+			),
+		field("Lines not shown", invoiceLineTotal > invoiceLinesShown ? String(invoiceLineTotal - invoiceLinesShown) : ""),
 		...metadataFields(record.metadata),
 	]);
 }
@@ -394,6 +468,150 @@ function chargeFields(record: Record<string, unknown>, customerId: string | null
 		field("Payment method type", text(asRecord(record.payment_method_details).type)),
 		field("Payment intent", expandableId(record.payment_intent) ?? ""),
 		...metadataFields(record.metadata),
+	]);
+}
+
+function discountIds(value: unknown): string {
+	if (!Array.isArray(value)) return "";
+	return value
+		.map((entry) => {
+			if (typeof entry === "string") return entry;
+			const discount = asRecord(entry);
+			const coupon = asRecord(discount.coupon);
+			return [text(coupon.name) || text(coupon.id), text(discount.id)].filter(Boolean).join(" ");
+		})
+		.filter(Boolean)
+		.slice(0, MAX_LINE_ITEMS)
+		.join(", ");
+}
+
+function periodText(value: unknown): string {
+	const period = asRecord(value);
+	const start = timestamp(period.start);
+	const end = timestamp(period.end);
+	return start && end ? `${start} to ${end}` : "";
+}
+
+function amountOf(record: Record<string, unknown>, key: string): string {
+	const currency = text(record.currency);
+	return currency ? money(record[key], currency) : "";
+}
+
+function chargeAdjustmentFields(record: Record<string, unknown>, customerId: string | null): StripeRecordField[] {
+	return compact([
+		field("Customer", customerId ?? ""),
+		field("Charge", expandableId(record.charge) ?? ""),
+		field("Payment intent", expandableId(record.payment_intent) ?? ""),
+		field("Amount", amountOf(record, "amount")),
+		field("Status", text(record.status)),
+		field("Reason", text(record.reason)),
+		field("Failure reason", text(record.failure_reason)),
+		field("Created", timestamp(record.created)),
+		field("Evidence due by", timestamp(asRecord(record.evidence_details).due_by)),
+		field("Description", text(record.description)),
+		...metadataFields(record.metadata),
+	]);
+}
+
+function creditNoteFields(record: Record<string, unknown>, customerId: string | null): StripeRecordField[] {
+	return compact([
+		field("Number", text(record.number)),
+		field("Customer", customerId ?? ""),
+		field("Invoice", expandableId(record.invoice) ?? ""),
+		field("Status", text(record.status)),
+		field("Type", text(record.type)),
+		field("Reason", text(record.reason)),
+		field("Total", amountOf(record, "total")),
+		field("Created", timestamp(record.created)),
+		field("Memo", text(record.memo)),
+		...metadataFields(record.metadata),
+	]);
+}
+
+function couponFields(record: Record<string, unknown>): StripeRecordField[] {
+	return compact([
+		field("Name", text(record.name)),
+		field("Percent off", typeof record.percent_off === "number" ? `${record.percent_off}%` : ""),
+		field("Amount off", record.amount_off == null ? "" : amountOf(record, "amount_off")),
+		field("Duration", text(record.duration)),
+		field("Duration in months", typeof record.duration_in_months === "number" ? String(record.duration_in_months) : ""),
+		field("Times redeemed", typeof record.times_redeemed === "number" ? String(record.times_redeemed) : ""),
+		field("Max redemptions", typeof record.max_redemptions === "number" ? String(record.max_redemptions) : ""),
+		field("Redeem by", timestamp(record.redeem_by)),
+		field("Valid", bool(record.valid)),
+		field("Created", timestamp(record.created)),
+		...metadataFields(record.metadata),
+	]);
+}
+
+function productFields(record: Record<string, unknown>): StripeRecordField[] {
+	return compact([
+		field("Name", text(record.name)),
+		field("Active", bool(record.active)),
+		field("Description", text(record.description)),
+		field("Default price", expandableId(record.default_price) ?? ""),
+		field("Created", timestamp(record.created)),
+		...metadataFields(record.metadata),
+	]);
+}
+
+function priceFields(record: Record<string, unknown>): StripeRecordField[] {
+	const recurring = asRecord(record.recurring);
+	const interval = text(recurring.interval);
+	const count = typeof recurring.interval_count === "number" ? recurring.interval_count : 1;
+	return compact([
+		field("Nickname", text(record.nickname)),
+		field("Product", expandableId(record.product) ?? ""),
+		field("Active", bool(record.active)),
+		field("Unit amount", record.unit_amount == null ? "" : amountOf(record, "unit_amount")),
+		field("Type", text(record.type)),
+		field("Billing interval", interval ? `every ${count} ${interval}` : ""),
+		field("Created", timestamp(record.created)),
+		...metadataFields(record.metadata),
+	]);
+}
+
+function payoutFields(record: Record<string, unknown>): StripeRecordField[] {
+	return compact([
+		field("Amount", amountOf(record, "amount")),
+		field("Status", text(record.status)),
+		field("Type", text(record.type)),
+		field("Method", text(record.method)),
+		field("Created", timestamp(record.created)),
+		field("Arrival date", timestamp(record.arrival_date)),
+		field("Failure code", text(record.failure_code)),
+		field("Description", text(record.description)),
+	]);
+}
+
+function balanceTransactionFields(record: Record<string, unknown>): StripeRecordField[] {
+	return compact([
+		field("Type", text(record.type)),
+		field("Reporting category", text(record.reporting_category)),
+		field("Source", expandableId(record.source) ?? ""),
+		field("Amount", amountOf(record, "amount")),
+		field("Fee", amountOf(record, "fee")),
+		field("Net", amountOf(record, "net")),
+		field("Status", text(record.status)),
+		field("Created", timestamp(record.created)),
+		field("Available on", timestamp(record.available_on)),
+		field("Description", text(record.description)),
+	]);
+}
+
+function eventFields(
+	record: Record<string, unknown>,
+	subject: Record<string, unknown>,
+	customerId: string | null,
+): StripeRecordField[] {
+	const changed = Object.keys(asRecord(asRecord(record.data).previous_attributes)).sort();
+	return compact([
+		field("Type", text(record.type)),
+		field("Customer", customerId ?? ""),
+		field("Object", [text(subject.object), text(subject.id)].filter(Boolean).join(" ")),
+		field("Object status", text(subject.status)),
+		field("Changed fields", changed.slice(0, 20).join(", ")),
+		field("Created", timestamp(record.created)),
 	]);
 }
 

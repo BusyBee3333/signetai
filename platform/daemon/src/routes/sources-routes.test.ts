@@ -907,7 +907,7 @@ describe("Sources routes", () => {
 			{ tokenRef: "STRIPE_KEY", maxItemsPerType: "25" },
 			{ tokenRef: "STRIPE_KEY", maxItemsPerType: 0 },
 			{ tokenRef: "STRIPE_KEY", resourceTypes: "customers" },
-			{ tokenRef: "STRIPE_KEY", resourceTypes: ["payouts"] },
+			{ tokenRef: "STRIPE_KEY", resourceTypes: ["payment_intents"] },
 			{ tokenRef: `sk_live_${"a".repeat(24)}` },
 		]) {
 			const res = await makeApp().request("/api/sources/stripe", {

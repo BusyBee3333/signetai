@@ -446,7 +446,7 @@ export function registerSourcesCommands(program: Command, deps: RegisterSourcesC
 		.option("--name <name>", "Display name for the Stripe source")
 		.option(
 			"--resource <type>",
-			"Resource type: customers, subscriptions, invoices, or charges (repeatable)",
+			"Resource type: customers, subscriptions, invoices, charges, refunds, disputes, credit_notes, coupons, products, prices, payouts, balance_transactions, or events (repeatable; default: the first four)",
 			collect,
 			[],
 		)

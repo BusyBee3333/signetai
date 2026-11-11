@@ -776,7 +776,7 @@ and preserves omitted settings.
 ```
 
 `tokenRef` is required. `resourceTypes` is a non-empty array drawn from
-`customers`, `subscriptions`, `invoices`, and `charges` (default all four).
+`customers`, `subscriptions`, `invoices`, and `charges` (the default), plus the opt-in `refunds`, `disputes`, `credit_notes`, `coupons`, `products`, `prices`, `payouts`, `balance_transactions`, and `events`.
 `maxItemsPerType` is an integer from 1 to 100000 (default 5000); objects are
 enumerated newest first. Malformed bodies, unknown resource types, and wrongly
 typed fields return `400` without changing source config.
