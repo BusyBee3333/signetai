@@ -360,7 +360,7 @@ async function readIndexedContentHashes(
 			params: [agentId, sourceId, sourceKind, ...paths],
 			result: "all",
 		},
-		{ operation: "sources.stripe.read_versions", lane: "read", deadlineMs: 5_000 },
+		{ operation: "sources.stripe.read_versions", lane: "read", deadlineMs: 30_000 },
 	);
 	for (const row of rows) {
 		hashes.set(row.source_path, typeof row.content_hash === "string" ? row.content_hash : null);
@@ -389,7 +389,7 @@ async function purgeStaleRecords(
 				params: [agentId, source.id, ARTIFACT_KINDS[resource], after, STALE_SCAN_BATCH],
 				result: "all",
 			},
-			{ operation: "sources.stripe.scan_stale", lane: "read", deadlineMs: 5_000 },
+			{ operation: "sources.stripe.scan_stale", lane: "read", deadlineMs: 30_000 },
 		);
 		for (const row of rows) {
 			if (!seenPaths.has(row.source_path)) stale.push({ rowid: row.rowid, sourcePath: row.source_path });
@@ -426,7 +426,7 @@ async function purgeStaleFailureArtifacts(sourceId: string, agentId: string, syn
 				[syncStartedAt, agentId, sourceId, syncStartedAt],
 			),
 		],
-		{ operation: "sources.stripe.purge_failures", lane: "write", deadlineMs: 5_000, estimatedWorkUnits: 1 },
+		{ operation: "sources.stripe.purge_failures", lane: "write", deadlineMs: 30_000, estimatedWorkUnits: 1 },
 	);
 }
 
