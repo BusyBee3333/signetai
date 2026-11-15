@@ -28,6 +28,7 @@ import {
 	getDreamingReviewedEvidence,
 	getDreamingPasses,
 	getDreamingPass,
+	getDreamingPassPolicy,
 	getActiveDreamingPasses,
 	getDreamingQualityReport,
 	getDreamingState,
@@ -45,6 +46,7 @@ import {
 } from "../pipeline/dreaming-live-events";
 import { getFeedbackTelemetry } from "../pipeline/aspect-feedback.js";
 import { probeDreamingEpisodicBacklog } from "../pipeline/dreaming";
+import { DEFAULT_DREAMING_POLICIES } from "../pipeline/dreaming-policies";
 import { getDreamingEpisodicTokenBacklogCachedOrNull } from "../pipeline/dreaming-token-cache";
 import { getDreamingCapability, getDreamingCapabilityManifest } from "../pipeline/dreaming-capabilities.js";
 import { DREAMING_MAX_OPERATIONS_PER_REQUEST, applyDreamingOperations } from "../pipeline/dreaming-operations.js";
@@ -579,7 +581,7 @@ export function registerPipelineRoutes(app: Hono): void {
 		const ownerRows = await withRegisteredDbOwnerMaintenance((maintenance) =>
 			ownerQueryAll<{ status: string; count: number }>(
 				maintenance.owner,
-				"routes/pipeline-routes.ts:582",
+				"routes/pipeline-routes.ts:584",
 				"SELECT status, COUNT(*) as count FROM memory_jobs GROUP BY status",
 			),
 		);
@@ -737,6 +739,8 @@ export function registerPipelineRoutes(app: Hono): void {
 				codemode: cfg.dreaming.codemode,
 				timeout: cfg.dreaming.timeout,
 				surprisal: cfg.dreaming.surprisal,
+				policies: cfg.dreaming.policies,
+				defaultPolicies: DEFAULT_DREAMING_POLICIES,
 			},
 			passes,
 			attention,
@@ -870,6 +874,15 @@ export function registerPipelineRoutes(app: Hono): void {
 			items: await getDreamingToolCalls(getDbAccessor(), scopedAgent.agentId, passId),
 		});
 	});
+	app.get("/api/dream/passes/:passId/policy", async (c) => {
+		const scopedAgent = resolveScopedDreamAgent(c);
+		if (scopedAgent.error) return c.json({ error: scopedAgent.error }, 403);
+		const passId = c.req.param("passId").trim();
+		if (!passId) return c.json({ error: "Missing Dreaming pass id" }, 400);
+		const found = await getDreamingPassPolicy(getDbAccessor(), scopedAgent.agentId, passId);
+		if (!found) return c.json({ error: "Dreaming pass not found" }, 404);
+		return c.json({ agentId: scopedAgent.agentId, passId, policy: found.policy });
+	});
 	app.get("/api/dream/quality", async (c) => {
 		const scopedAgent = resolveScopedDreamAgent(c);
 		if (scopedAgent.error) return c.json({ error: scopedAgent.error }, 403);
@@ -900,7 +913,7 @@ export function registerPipelineRoutes(app: Hono): void {
 				async (maintenance) =>
 					(await ownerQueryOne<{ present: number }>(
 						maintenance.owner,
-						"routes/pipeline-routes.ts:903",
+						"routes/pipeline-routes.ts:916",
 						"SELECT 1 AS present FROM dreaming_evidence_exclusions WHERE agent_id = ? AND source_kind = 'summary' AND source_id = ? AND resolved_at IS NULL",
 						[agentId, sourceId],
 					)) != null,

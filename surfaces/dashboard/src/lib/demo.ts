@@ -563,6 +563,12 @@ const demoSecrets: { secrets: string[]; provider: string } = {
 	provider: "local",
 };
 
+const demoDreamPolicies: DreamStatus["config"]["policies"] = {
+	hygiene: "Work the attention queue: inspect each flagged target, then archive, merge, or keep it.\n",
+	content: "File what new evidence establishes as settled fact, with an exact quote for every claim.\n",
+	combined: "Work the attention queue first, then file what new evidence establishes.\n",
+};
+
 const demoDreamStatus: DreamStatus = {
 	worker: { running: false, active: false, activeAgentId: null },
 	scheduler: null,
@@ -581,6 +587,8 @@ const demoDreamStatus: DreamStatus = {
 		maxInputTokens: 60000,
 		maxOutputTokens: 16000,
 		timeout: 540,
+		policies: demoDreamPolicies,
+		defaultPolicies: demoDreamPolicies,
 	},
 	passes: [
 		{
@@ -600,6 +608,8 @@ const demoDreamStatus: DreamStatus = {
 			mutationsFailed: 0,
 			summary: "Merged 12 duplicate entities, tightened 25 evidence links.",
 			error: null,
+			policyHash: "d1f8a4c06b2e93f7",
+			policySource: "default",
 		},
 		{
 			id: "demo-pass-1",
@@ -618,6 +628,8 @@ const demoDreamStatus: DreamStatus = {
 			mutationsFailed: 0,
 			summary: "Promoted 84 new claims from source evidence.",
 			error: null,
+			policyHash: "5be07c19a3d2f640",
+			policySource: "custom",
 		},
 	],
 	attention: [
@@ -968,6 +980,15 @@ export function installDemoApi(target: ApiClient): void {
 	target.answerReflection = async () => ({ success: true, memoryId: "demo-memory-answer" });
 	target.getSecrets = async () => demoSecrets;
 	target.getDreamStatus = async () => demoDreamStatus;
+	target.getDreamPassPolicy = async (passId) => {
+		const pass = demoDreamStatus.passes.find((candidate) => candidate.id === passId);
+		if (!pass?.policyHash || !pass.policySource) return { agentId: "default", passId, policy: null };
+		const text =
+			pass.policySource === "default"
+				? demoDreamPolicies.hygiene
+				: "File claims only for decisions, shipped changes, and stable preferences.\nSkip advice and open questions.";
+		return { agentId: "default", passId, policy: { hash: pass.policyHash, source: pass.policySource, text } };
+	};
 	target.getMemories = async () => ({ memories: demoMemories, stats: demoMemoryStats });
 	target.searchMemories = async (q, limit = 20) => {
 		const needle = q.trim().toLowerCase();

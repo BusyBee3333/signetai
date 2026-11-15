@@ -33,8 +33,8 @@ import {
 import type { DbOwnerRequest } from "../db-owner-protocol";
 import { recallThroughDbOwner } from "../db-owner-recall";
 import { reportEventLoopLag, resetPressureState } from "../system-pressure";
+import { DEFAULT_DREAMING_POLICIES } from "./dreaming-policies";
 import {
-	DREAMING_AGENT_PROMPT,
 	type DreamingAgentExecutor,
 	type DreamingPassFocus,
 	dreamingFocusOfMode,
@@ -62,6 +62,7 @@ function defaultCfg(overrides?: Partial<DreamingConfig>): DreamingConfig {
 		maxOutputTokens: 16_000,
 		timeout: 300_000,
 		backfillOnFirstRun: false,
+		policies: DEFAULT_DREAMING_POLICIES,
 		...overrides,
 	};
 }
@@ -162,8 +163,11 @@ function createScopeDelayOwner(owner: DbOwnerClient): ScopeDelayOwner {
 				currentPassCreateJobId = handle.job.id;
 				currentPassCreateResult = "pending";
 				const resultIndex = passCreateResults.push("pending") - 1;
-				if (request.kind === "query") {
-					const passId = request.statement.params?.[0];
+				if (request.kind === "transaction") {
+					const insert = request.transaction.statements.find((statement) =>
+						statement.sql.includes("INSERT INTO dreaming_passes"),
+					);
+					const passId = insert?.params?.[0];
 					if (typeof passId === "string") passCreateIds.push(passId);
 				}
 				void handle.result.then(
@@ -1055,6 +1059,61 @@ describe("dreaming worker agent scope", () => {
 		}
 	});
 
+	it("reads the pass-type policy when each pass starts", async () => {
+		const seenPrompts: string[] = [];
+		const executorFactory = (): DreamingAgentExecutor => ({
+			async run(input: Parameters<DreamingAgentExecutor["run"]>[0]) {
+				seenPrompts.push(input.prompt);
+				return { summary: "Ran under the configured policy" };
+			},
+		});
+		let combined = "First combined policy.\n";
+		const worker = startDreamingWorker(accessor, defaultCfg({ tokenThreshold: 100_000 }), agentsDir, "default", {
+			executorFactory,
+			policies: () => ({ ...DEFAULT_DREAMING_POLICIES, combined }),
+		});
+		try {
+			await worker.trigger("compact", "default");
+			await waitFor(() => !worker.running, 2_000);
+			combined = "Edited combined policy.\n";
+			await worker.trigger("compact", "default");
+
+			expect(seenPrompts).toHaveLength(2);
+			expect(seenPrompts[0]?.startsWith("First combined policy.\n\n")).toBe(true);
+			expect(seenPrompts[1]?.startsWith("Edited combined policy.\n\n")).toBe(true);
+			for (const prompt of seenPrompts) {
+				expect(prompt).not.toContain("You are a bounded Signet maintenance agent");
+				expect(prompt).toContain("<pass_history>");
+			}
+		} finally {
+			worker.stop();
+		}
+	});
+
+	it("records no pass when the policy cannot be read", async () => {
+		let executorCalls = 0;
+		const executorFactory = (): DreamingAgentExecutor => ({
+			async run(_input: Parameters<DreamingAgentExecutor["run"]>[0]) {
+				executorCalls += 1;
+				return { summary: "Should not run" };
+			},
+		});
+		const worker = startDreamingWorker(accessor, defaultCfg({ tokenThreshold: 100_000 }), agentsDir, "default", {
+			executorFactory,
+			policies: () => {
+				throw new Error("agent.yaml: invalid YAML syntax");
+			},
+		});
+		try {
+			await expect(worker.trigger("compact", "default")).rejects.toThrow("invalid YAML syntax");
+			await waitFor(() => !worker.running, 2_000);
+			expect(executorCalls).toBe(0);
+			expect(db.prepare("SELECT COUNT(*) AS count FROM dreaming_passes").get()).toEqual({ count: 0 });
+		} finally {
+			worker.stop();
+		}
+	});
+
 	it("keeps the check loop alive when a scheduled pass fails (#1198)", async () => {
 		db.prepare(
 			`INSERT INTO session_transcripts
@@ -1485,7 +1544,7 @@ describe("dreaming worker agent scope", () => {
 				.all() as Array<{ agent_id: string; status: string; mode: string }>;
 			expect(passes).toEqual([{ agent_id: "default", status: "completed", mode: "incremental" }]);
 			expect(seenPrompts).toHaveLength(1);
-			expect(seenPrompts[0]).toContain(DREAMING_AGENT_PROMPT);
+			expect(seenPrompts[0]).toContain(DEFAULT_DREAMING_POLICIES.combined);
 			expect(seenPrompts[0]).toContain("<agent_scopes>");
 			expect(seenPrompts[0]).toContain(ALPHA);
 			expect(seenPrompts[0]).toContain(BETA);

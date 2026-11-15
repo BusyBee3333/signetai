@@ -1,5 +1,5 @@
 import type { DreamingPassLiveOptions } from "./dreaming";
-import type { DreamingConfig } from "@signet/core";
+import type { DreamingConfig, DreamingPolicies } from "@signet/core";
 import type { DbAccessor } from "../db-accessor";
 import type { DbOwnerMaintenance } from "../db-owner-maintenance";
 import { ownerQueryAll, ownerQueryOne } from "../db-owner-maintenance";
@@ -16,6 +16,7 @@ import {
 	type DreamingPassFocus,
 	createDreamingPass,
 	createDreamingPassThroughOwner,
+	dreamingPassPolicy,
 	dreamingFocusOfMode,
 	enqueueDreamingHygieneAttention,
 	enqueueDreamingSurprisalAttention,
@@ -167,6 +168,7 @@ export interface DreamingWorkerOptions {
 	readonly historyCompleterFactory?: (agentId: string) => DreamingHistoryCompleter;
 	readonly checkIntervalMs?: number;
 	readonly enabled?: () => boolean;
+	readonly policies?: () => DreamingPolicies;
 	readonly inferenceAvailable?: (agentId: string) => Promise<boolean>;
 	readonly acpxMcp?: {
 		readonly daemonUrl: string;
@@ -517,18 +519,21 @@ export function startDreamingWorker(
 			}),
 		};
 		runningPasses.add(entry);
-		const passId = (async () => {
+		const prepared = (async () => {
+			const config = options.policies ? { ...cfg, policies: options.policies() } : cfg;
+			const policy = dreamingPassPolicy(config.policies, mode);
 			const id = options.ownerMaintenance
-				? await createDreamingPassThroughOwner(options.ownerMaintenance, runAgentId, mode)
-				: await createDreamingPass(accessor, runAgentId, mode);
+				? await createDreamingPassThroughOwner(options.ownerMaintenance, runAgentId, mode, policy)
+				: await createDreamingPass(accessor, runAgentId, mode, policy);
 			entry.passId = id;
-			return id;
+			return { id, config };
 		})();
-		const result = passId.then((id) =>
+		const passId = prepared.then(({ id }) => id);
+		const result = prepared.then(({ id, config }) =>
 			runDreamingAgentPass(
 				accessor,
 				reportToolCalls(executorForAgent(runAgentId), () => resolveToolCall(true)),
-				cfg,
+				config,
 				agentsDir,
 				runAgentId,
 				scopes,

@@ -799,6 +799,14 @@ export interface DreamPass {
 	mutationsFailed: number | null;
 	summary: string | null;
 	error: string | null;
+	policyHash: string | null;
+	policySource: "default" | "custom" | null;
+}
+
+export interface DreamPassPolicy {
+	hash: string;
+	source: "default" | "custom";
+	text: string;
 }
 
 export interface DreamAttention {
@@ -840,6 +848,9 @@ export interface DreamQuality {
 	};
 }
 
+export type DreamPassType = "hygiene" | "content" | "combined";
+export type DreamPolicies = Readonly<Record<DreamPassType, string>>;
+
 export interface DreamStatus {
 	worker: { running: boolean; active: boolean; activeAgentId: string | null };
 	scheduler: {
@@ -862,6 +873,8 @@ export interface DreamStatus {
 		maxInputTokens: number;
 		maxOutputTokens: number | null;
 		timeout: number;
+		policies: DreamPolicies;
+		defaultPolicies: DreamPolicies;
 	};
 	passes: DreamPass[];
 	attention: DreamAttention[];
@@ -1093,6 +1106,10 @@ export const api = {
 	getDreamPassTools: (passId: string) =>
 		getJSON<{ agentId: string; passId: string; items: DreamToolCall[] }>(
 			`/api/dream/passes/${encodeURIComponent(passId)}/tools`,
+		),
+	getDreamPassPolicy: (passId: string) =>
+		getJSON<{ agentId: string; passId: string; policy: DreamPassPolicy | null }>(
+			`/api/dream/passes/${encodeURIComponent(passId)}/policy`,
 		),
 	getBoardTopics: () => getJSON<{ topics: BoardTopic[]; count: number }>("/api/board/topics?scope=all"),
 	getBoardThreads: (query: BoardThreadQuery = {}) =>
