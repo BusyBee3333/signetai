@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { type WriteDb, closeDbAccessor, getDbAccessor, initDbAccessor } from "../db-accessor";
+import { registerActiveDreamingPassTools } from "../pipeline/dreaming";
+import type { PiAgentTool } from "../pipeline/pi-agent-protocol";
 import { registerPipelineRoutes } from "./pipeline-routes";
 
 describe("POST /api/dream/tools/apply_ontology_ops", () => {
@@ -81,5 +83,59 @@ describe("POST /api/dream/tools/apply_ontology_ops", () => {
 		} finally {
 			injectable.withWriteTxAsync = enqueue;
 		}
+	});
+});
+
+describe("POST /api/dream/tools/:capability for an out-of-process pass agent", () => {
+	let agentsDir = "";
+
+	beforeEach(() => {
+		agentsDir = mkdtempSync(join(tmpdir(), "signet-dreaming-pass-tools-route-"));
+		mkdirSync(join(agentsDir, "memory"), { recursive: true });
+		initDbAccessor(join(agentsDir, "memory", "memories.db"), { agentsDir });
+	});
+
+	afterEach(async () => {
+		await closeDbAccessor();
+		rmSync(agentsDir, { recursive: true, force: true });
+	});
+
+	const call = (app: Hono, passId: string) =>
+		app.request("/api/dream/tools/search_evidence", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ agentId: "agent-a", actor: "dreaming-acpx", passId, input: { limit: 1 } }),
+		});
+
+	it("runs the call through the running pass's own tools, and refuses once the pass is gone", async () => {
+		const seen: unknown[] = [];
+		const tool = {
+			name: "search_evidence",
+			label: "Search evidence",
+			description: "test",
+			parameters: {},
+			async execute(_toolCallId: string, input: unknown) {
+				seen.push(input);
+				return {
+					content: [
+						{ type: "text", text: JSON.stringify({ tool: "search_evidence", ok: true, items: [], fromPass: true }) },
+					],
+					details: { tool: "search_evidence" },
+				};
+			},
+		} as unknown as PiAgentTool;
+		const app = new Hono();
+		registerPipelineRoutes(app);
+		const release = registerActiveDreamingPassTools("pass-live", [tool]);
+
+		const live = await call(app, "pass-live");
+		expect(live.status).toBe(200);
+		expect(await live.json()).toMatchObject({ ok: true, fromPass: true, agentId: "agent-a" });
+		expect(seen).toEqual([{ limit: 1, agentId: "agent-a" }]);
+
+		release();
+		const stale = await call(app, "pass-live");
+		expect(stale.status).toBe(409);
+		expect(seen).toHaveLength(1);
 	});
 });

@@ -44,7 +44,11 @@ import {
 	type DreamingLiveEvent,
 } from "../pipeline/dreaming-live-events";
 import { getFeedbackTelemetry } from "../pipeline/aspect-feedback.js";
-import { probeDreamingEpisodicBacklog } from "../pipeline/dreaming";
+import {
+	hasActiveDreamingPass,
+	invokeActiveDreamingPassTool,
+	probeDreamingEpisodicBacklog,
+} from "../pipeline/dreaming";
 import { getDreamingEpisodicTokenBacklogCachedOrNull } from "../pipeline/dreaming-token-cache";
 import { getDreamingCapability, getDreamingCapabilityManifest } from "../pipeline/dreaming-capabilities.js";
 import { DREAMING_MAX_OPERATIONS_PER_REQUEST, applyDreamingOperations } from "../pipeline/dreaming-operations.js";
@@ -985,12 +989,33 @@ export function registerPipelineRoutes(app: Hono): void {
 		const body = asRecord(raw);
 		const scopedAgent = resolveScopedDreamAgent(c, body);
 		if (scopedAgent.error) return c.json({ error: scopedAgent.error }, 403);
+		const actor = readString(body, "actor") ?? c.req.header("x-signet-actor") ?? "dreaming-client";
+		const passId = readString(body, "passId") ?? undefined;
+		if (passId !== undefined && hasActiveDreamingPass(passId)) {
+			// A running pass owns its tool context. Route the call through it so the
+			// evidence cursor, trace, caps, and applied counts stay with the pass.
+			const input = asRecord(body.input);
+			const requested = readString(input, "agentId");
+			const result = await invokeActiveDreamingPassTool(passId, c.req.param("capability"), {
+				...input,
+				agentId: requested ?? scopedAgent.agentId,
+			});
+			if (result === null) return c.json({ error: "Unknown Dreaming capability for this pass" }, 404);
+			return c.json(
+				{ ...result, agentId: requested ?? scopedAgent.agentId },
+				result.ok ? 200 : result.retryable === true ? 503 : 400,
+			);
+		}
+		if (actor === "dreaming-acpx") {
+			// The ACPX agent is bound to one pass; once that pass is gone it must not keep writing.
+			return c.json({ error: "Dreaming pass is not active" }, 409);
+		}
 		const capability = getDreamingCapability(
 			{
 				accessor: getDbAccessor(),
 				agentId: scopedAgent.agentId,
-				actor: readString(body, "actor") ?? c.req.header("x-signet-actor") ?? "dreaming-client",
-				passId: readString(body, "passId") ?? undefined,
+				actor,
+				passId,
 			},
 			c.req.param("capability"),
 		);
