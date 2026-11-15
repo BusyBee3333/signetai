@@ -178,7 +178,11 @@ async function goHighLevelRequest(
 			if (!shouldContinue()) controller.abort();
 		}, CANCEL_POLL_MS);
 		try {
-			const response = await fetch(`${GOHIGHLEVEL_API_BASE}${pathAndQuery}`, {
+			// Private BLG backfill: conversation requests can be served from a local download.
+			const privateBase = pathAndQuery.startsWith("/conversations")
+				? process.env.SIGNET_GHL_CONVERSATIONS_BASE
+				: undefined;
+			const response = await fetch(`${privateBase || GOHIGHLEVEL_API_BASE}${pathAndQuery}`, {
 				method: "GET",
 				headers: {
 					Authorization: `Bearer ${token}`,

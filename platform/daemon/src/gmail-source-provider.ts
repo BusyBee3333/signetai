@@ -329,7 +329,7 @@ async function readIndexedPaths(
 				params: [agentId, sourceId, ...batch],
 				result: "all",
 			},
-			{ operation: "sources.gmail.read_indexed", lane: "read", deadlineMs: 30_000 },
+			{ operation: "sources.gmail.read_indexed", lane: "read", deadlineMs: 60_000 },
 		);
 		for (const row of rows) known.add(row.source_path);
 	}
@@ -356,7 +356,7 @@ async function purgeStaleMessages(
 				params: [agentId, source.id, after, STALE_SCAN_BATCH],
 				result: "all",
 			},
-			{ operation: "sources.gmail.scan_stale", lane: "read", deadlineMs: 30_000 },
+			{ operation: "sources.gmail.scan_stale", lane: "read", deadlineMs: 60_000 },
 		);
 		for (const row of rows) {
 			if (!seenPaths.has(row.source_path)) stale.push({ rowid: row.rowid, sourcePath: row.source_path });
@@ -378,7 +378,7 @@ async function purgeStaleMessages(
 					[syncStartedAt, agentId, source.id, ...batch.map((row) => row.rowid)],
 				),
 			],
-			{ operation: "sources.gmail.purge_stale", lane: "write", deadlineMs: 30_000, estimatedWorkUnits: batch.length },
+			{ operation: "sources.gmail.purge_stale", lane: "write", deadlineMs: 60_000, estimatedWorkUnits: batch.length },
 		);
 	}
 }
@@ -393,7 +393,7 @@ async function purgeStaleFailureArtifacts(sourceId: string, agentId: string, syn
 				[syncStartedAt, agentId, sourceId, syncStartedAt],
 			),
 		],
-		{ operation: "sources.gmail.purge_failures", lane: "write", deadlineMs: 30_000, estimatedWorkUnits: 1 },
+		{ operation: "sources.gmail.purge_failures", lane: "write", deadlineMs: 60_000, estimatedWorkUnits: 1 },
 	);
 }
 

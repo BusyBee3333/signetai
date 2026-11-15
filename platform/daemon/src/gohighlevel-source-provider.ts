@@ -463,7 +463,7 @@ async function readIndexedVersions(
 			params: [agentId, sourceId, sourceKind, ...paths],
 			result: "all",
 		},
-		{ operation: "sources.gohighlevel.read_versions", lane: "read", deadlineMs: 30_000 },
+		{ operation: "sources.gohighlevel.read_versions", lane: "read", deadlineMs: 60_000 },
 	);
 	for (const row of rows) {
 		hashes.set(row.source_path, {
@@ -495,7 +495,7 @@ async function purgeStaleRecords(
 				params: [agentId, source.id, ARTIFACT_KINDS[resource], after, STALE_SCAN_BATCH],
 				result: "all",
 			},
-			{ operation: "sources.gohighlevel.scan_stale", lane: "read", deadlineMs: 30_000 },
+			{ operation: "sources.gohighlevel.scan_stale", lane: "read", deadlineMs: 60_000 },
 		);
 		for (const row of rows) {
 			if (!seenPaths.has(row.source_path)) stale.push({ rowid: row.rowid, sourcePath: row.source_path });
@@ -520,7 +520,7 @@ async function purgeStaleRecords(
 			{
 				operation: "sources.gohighlevel.purge_stale",
 				lane: "write",
-				deadlineMs: 30_000,
+				deadlineMs: 60_000,
 				estimatedWorkUnits: batch.length,
 			},
 		);
@@ -537,7 +537,7 @@ async function purgeStaleFailureArtifacts(sourceId: string, agentId: string, syn
 				[syncStartedAt, agentId, sourceId, syncStartedAt],
 			),
 		],
-		{ operation: "sources.gohighlevel.purge_failures", lane: "write", deadlineMs: 30_000, estimatedWorkUnits: 1 },
+		{ operation: "sources.gohighlevel.purge_failures", lane: "write", deadlineMs: 60_000, estimatedWorkUnits: 1 },
 	);
 }
 
