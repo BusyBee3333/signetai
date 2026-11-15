@@ -55,6 +55,7 @@ import { normalizePipelineCause, recordPipelineOperation } from "../pipeline-ope
 import { getActiveTelemetry } from "../telemetry";
 import { upsertThreadHead } from "../thread-heads";
 import { createDreamingAgentTools } from "./dreaming-agent-tools";
+import type { PiAgentTool } from "./pi-agent-protocol";
 import { enqueueDreamingAttentionInTx, getDreamingAttentionWorkloadDiagnostics } from "./dreaming-attention";
 import type { DreamingToolCallTrace } from "./dreaming-capabilities";
 import { DREAMING_CAPABILITY_IDS, dreamingEvidencePageChars, listDreamingAttention } from "./dreaming-capabilities";
@@ -759,6 +760,53 @@ function parseToolTrace(value: string): unknown {
 	} catch {
 		return { malformedTrace: true };
 	}
+}
+
+export interface ActiveDreamingPassToolResult {
+	readonly ok: boolean;
+	readonly retryable?: boolean;
+	readonly [key: string]: unknown;
+}
+type ActiveDreamingPassTool = (toolCallId: string, input: unknown) => Promise<ActiveDreamingPassToolResult>;
+const activeDreamingPassTools = new Map<string, ReadonlyMap<string, ActiveDreamingPassTool>>();
+
+/**
+ * The running pass owns its tool context (scopes, caps, evidence cursor, trace
+ * recording). Out-of-process agents reach Dreaming tools over HTTP, so the
+ * route resolves the pass here instead of building a second, hookless context.
+ */
+export function hasActiveDreamingPass(passId: string): boolean {
+	return activeDreamingPassTools.has(passId);
+}
+
+export async function invokeActiveDreamingPassTool(
+	passId: string,
+	capabilityId: string,
+	input: unknown,
+): Promise<ActiveDreamingPassToolResult | null> {
+	const tool = activeDreamingPassTools.get(passId)?.get(capabilityId);
+	if (!tool) return null;
+	try {
+		return await tool(`http-${randomUUID()}`, input);
+	} catch (error) {
+		return { tool: capabilityId, ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+export function registerActiveDreamingPassTools(passId: string, tools: readonly PiAgentTool[]): () => void {
+	const byName = new Map<string, ActiveDreamingPassTool>();
+	for (const tool of tools) {
+		byName.set(tool.name, async (toolCallId, input) => {
+			const result = await tool.execute(toolCallId, input as never);
+			const first = result.content[0];
+			if (first?.type !== "text") return { tool: tool.name, ok: false, error: "Dreaming tool returned no result" };
+			return JSON.parse(first.text) as ActiveDreamingPassToolResult;
+		});
+	}
+	activeDreamingPassTools.set(passId, byName);
+	return () => {
+		if (activeDreamingPassTools.get(passId) === byName) activeDreamingPassTools.delete(passId);
+	};
 }
 
 async function recordDreamingToolCall(
@@ -1974,23 +2022,26 @@ ${JSON.stringify(liveOptions.userRequest)}
 			mode,
 			promptChars: passPrompt.length,
 		});
-		const executorResult = await executor.run({
-			passId,
-			prompt: passPrompt,
-			tools,
-			timeoutMs: cfg.timeout,
-			maxTokens: cfg.maxOutputTokens ?? undefined,
-			onEvent: (event) => {
-				if (isPiCompactionStart(event)) {
-					logger.warn("dreaming", "Pi auto-compaction fired inside a Dreaming pass", {
-						passId,
-						reason: event.reason ?? null,
-					});
-				}
-				publishDreamingAgentEvent(passId, event, live);
-			},
-			onSessionInfo: (info) => publishDreamingSessionInfo(passId, info, live),
-		});
+		const releasePassTools = registerActiveDreamingPassTools(passId, tools);
+		const executorResult = await executor
+			.run({
+				passId,
+				prompt: passPrompt,
+				tools,
+				timeoutMs: cfg.timeout,
+				maxTokens: cfg.maxOutputTokens ?? undefined,
+				onEvent: (event) => {
+					if (isPiCompactionStart(event)) {
+						logger.warn("dreaming", "Pi auto-compaction fired inside a Dreaming pass", {
+							passId,
+							reason: event.reason ?? null,
+						});
+					}
+					publishDreamingAgentEvent(passId, event, live);
+				},
+				onSessionInfo: (info) => publishDreamingSessionInfo(passId, info, live),
+			})
+			.finally(releasePassTools);
 		if (mode === "incremental-content" && memoryHeadCommitInput === null) {
 			const rejection = memoryHeadCommitRejection;
 			throw new Error(
