@@ -172,11 +172,15 @@ function DreamingPolicyEditor({
 	const configured = typeof raw === "string" && raw.trim() && raw.length <= 64_000 ? raw : null;
 	const saved = configured ?? fallback;
 	const [text, setText] = useState(saved);
+	const [saveFailed, setSaveFailed] = useState(false);
 	useEffect(() => setText(saved), [saved]);
-	const commit = (value: string) => {
-		if (!value.trim() || value === fallback) store.aDel(path);
+	const commit = async (value: string) => {
+		const reset = !value.trim() || value === fallback;
+		if (reset) store.aDel(path);
 		else store.aSetStr(path, value);
-		void store.save();
+		// A blank save over an unset or non-text value leaves `saved` unchanged, so the effect above never fires.
+		if (reset) setText(fallback);
+		setSaveFailed(!(await store.save()));
 	};
 
 	return (
@@ -195,12 +199,26 @@ function DreamingPolicyEditor({
 				className="min-h-[220px] w-full resize-y rounded-[var(--control-radius)] border border-[var(--border)] bg-[var(--card)] p-3 font-mono text-[12px] leading-relaxed text-[var(--foreground)]"
 			/>
 			<div className="flex items-center gap-2">
-				<Button size="compact" disabled={!store.ready || text === saved} onClick={() => commit(text)}>
+				<Button
+					size="compact"
+					disabled={!store.ready || store.saving || (text === saved && !saveFailed)}
+					onClick={() => void commit(text)}
+				>
 					Save
 				</Button>
-				<Button size="compact" variant="ghost" disabled={!store.ready || raw === undefined} onClick={() => commit("")}>
+				<Button
+					size="compact"
+					variant="ghost"
+					disabled={!store.ready || store.saving || (raw === undefined && !saveFailed)}
+					onClick={() => void commit("")}
+				>
 					Reset to default
 				</Button>
+				{saveFailed && (
+					<span className="settings-row-description text-[var(--destructive)]">
+						Not saved. Dreaming still runs the previous policy.
+					</span>
+				)}
 			</div>
 		</div>
 	);

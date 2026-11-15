@@ -21,6 +21,7 @@ if (!process.env.SIGNET_ADVANCED_POLICIES_CHILD) {
 	const originalFetch = globalThis.fetch;
 	let config = "";
 	let dreamStatusAvailable = true;
+	let saveFails = false;
 	const defaultPolicies = {
 		hygiene: "Default hygiene policy.\n",
 		content: "Default content policy.\n",
@@ -36,6 +37,7 @@ if (!process.env.SIGNET_ADVANCED_POLICIES_CHILD) {
 			if (url.endsWith("/api/config") && method === "GET")
 				return Response.json({ files: [{ name: "agent.yaml", content: config }] });
 			if (url.endsWith("/api/config") && method === "POST") {
+				if (saveFails) return Response.json({ error: "disk full" }, { status: 500 });
 				config = JSON.parse(String(init?.body)).content as string;
 				return Response.json({ success: true });
 			}
@@ -48,6 +50,7 @@ if (!process.env.SIGNET_ADVANCED_POLICIES_CHILD) {
 	});
 	beforeEach(() => {
 		dreamStatusAvailable = true;
+		saveFails = false;
 		config = "memory:\n  dreaming:\n    enabled: true\n";
 	});
 	afterAll(() => {
@@ -148,6 +151,42 @@ if (!process.env.SIGNET_ADVANCED_POLICIES_CHILD) {
 			}
 		},
 	);
+
+	test("a failed save keeps the policy unsaved and retryable", async () => {
+		await mount();
+		try {
+			saveFails = true;
+			await type("Content pass policy", "File only decisions.\n");
+			await act(async () => button("Content pass policy", "Save").click());
+			await settle();
+			expect(config).not.toContain("File only decisions.");
+			expect(editor("Content pass policy").parentElement?.textContent).toContain("Not saved.");
+			expect(button("Content pass policy", "Save").disabled).toBe(false);
+			expect(button("Content pass policy", "Reset to default").disabled).toBe(false);
+
+			saveFails = false;
+			await act(async () => button("Content pass policy", "Save").click());
+			await settle();
+			expect(config).toContain("File only decisions.");
+			expect(editor("Content pass policy").parentElement?.textContent).not.toContain("Not saved.");
+			expect(button("Content pass policy", "Save").disabled).toBe(true);
+		} finally {
+			await unmount();
+		}
+	});
+
+	test("a blank save while on the default shows the default text again", async () => {
+		await mount();
+		try {
+			await type("Combined pass policy", "  ");
+			await act(async () => button("Combined pass policy", "Save").click());
+			await settle();
+			expect(editor("Combined pass policy").value).toBe(defaultPolicies.combined);
+			expect(config).not.toContain("policies:");
+		} finally {
+			await unmount();
+		}
+	});
 
 	test("pass policies are not editable until the daemon supplies the defaults", async () => {
 		dreamStatusAvailable = false;
